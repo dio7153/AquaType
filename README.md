@@ -13,6 +13,7 @@ Built on RIME (Squirrel) with a noisy-channel decoding engine that runs entirely
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)
 ![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1%2B-555555)
 [![License](https://img.shields.io/badge/license-GPL--3.0%20%2F%20Apache--2.0%20%2F%20CC%20BY--NC%204.0-blue)](NOTICE.txt)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23289528.svg)](https://doi.org/10.5281/zenodo.23289528)
 
 <img src="docs/images/demo.gif" width="560" alt="按錯了很多鍵，AquaType 仍然列出正確的句子">
 
