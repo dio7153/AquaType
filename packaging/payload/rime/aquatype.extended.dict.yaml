@@ -1,0 +1,19 @@
+# Rime dictionary
+# encoding: utf-8
+# The dictionary AquaType's Rime schema converts with: AquaType's own tables and the ones it imports.
+---
+name: aquatype.extended
+version: "20261009"
+sort: by_weight
+# Entries without a weight of their own take it from Rime's word-frequency list (essay.txt, shipped in
+# SharedSupport).  Without it they all weigh 0, and a rare character with any weight at all goes first.
+# Entries in a form essay.txt counts under another spelling (為什麼 as 爲什麼) carry their weight.
+vocabulary: essay
+import_tables:
+  - aquatype_lexicon
+  - aquatype_boost
+  - aquatype_mcbopomofo
+  - terra_pinyin
+  - aquatype_phrases
+  - aquatype_variants
+...

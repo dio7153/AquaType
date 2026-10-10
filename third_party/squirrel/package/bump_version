@@ -1,0 +1,28 @@
+#!/bin/bash
+
+set -e
+
+cd "$(dirname $0)/.."
+source package/common.sh
+
+app_version="$(get_app_version)"
+echo "current app version: ${app_version}"
+
+new_version="$(git-cliff --bumped-version)"
+echo "bump version: ${old_version} => ${new_version}"
+
+bump_version "${new_version}"
+
+git-cliff --bump --unreleased --prepend CHANGELOG.md
+
+${VISUAL:-${EDITOR:-nano}} CHANGELOG.md
+
+match_line "## ${new_version} " CHANGELOG.md || (
+    echo >&2 "CHANGELOG.md has no changes for version ${new_version}."
+    exit 1
+)
+
+release_message="chore(release): ${new_version} :tada:"
+release_tag="${new_version}"
+git commit --all --message "${release_message}"
+git tag --annotate "${release_tag}" --message "${release_message}"

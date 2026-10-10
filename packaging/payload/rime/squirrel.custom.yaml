@@ -1,0 +1,39 @@
+# The candidate panel: a white floating panel, one candidate per line, grey numbers, and the highlighted candidate on a
+# blue rounded capsule.  It is white in dark mode too: the same scheme for both, and no translucency.
+#
+# Colours are written the way Squirrel reads them, alpha-blue-green-red: 0xffff7a00 is Apple's blue (0, 122, 255).
+patch:
+  style:
+    color_scheme: aquatype_apple
+    color_scheme_dark: aquatype_apple
+    candidate_list_layout: stacked
+    text_orientation: horizontal
+    inline_preedit: true
+    translucency: false
+    show_paging: false
+    candidate_format: "%c %@"
+    font_face: "PingFang TC"
+    font_point: 15
+    label_font_point: 12
+    comment_font_point: 12
+    corner_radius: 14
+    hilited_corner_radius: 16
+    border_height: 7
+    border_width: 9
+    line_spacing: 4
+    spacing: 6
+    shadow_size: 0
+  preset_color_schemes:
+    aquatype_apple:
+      name: "AquaType Apple-like Popover"
+      color_space: "sRGB"
+      text_color: 0xff1f1d1d
+      back_color: 0xffffffff
+      candidate_text_color: 0xff1f1d1d
+      label_color: 0xff938e8e
+      comment_text_color: 0xff938e8e
+      hilited_text_color: 0xffffffff
+      hilited_candidate_text_color: 0xffffffff
+      hilited_candidate_label_color: 0xffffffff
+      hilited_comment_text_color: 0xffffffff
+      hilited_candidate_back_color: 0xffff7a00

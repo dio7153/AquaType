@@ -1,0 +1,10 @@
+[submodule "librime"]
+	path = librime
+	url = https://github.com/rime/librime.git
+	ignore = dirty
+[submodule "plum"]
+	path = plum
+	url = https://github.com/rime/plum.git
+[submodule "Sparkle"]
+	path = Sparkle
+	url = https://github.com/sparkle-project/Sparkle

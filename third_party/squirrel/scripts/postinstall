@@ -1,0 +1,36 @@
+#!/bin/bash
+set -e
+
+# Upstream Squirrel's installer step, reached only from this Makefile's `install-debug` / `install-release`.  AquaType
+# does not install this way and cannot: this script expects a bundle called Squirrel.app and an `rime-install` helper,
+# and the Xcode target produces AquaType.app while packaging/build_app.sh deletes that helper.  The three
+# `--*-input-source` arguments below went with sources/InputSource.swift, whose job moved to
+# tools/AquaTypeInputSourceTool.swift - a separate signed binary that the package runs in the console user's GUI
+# session, which is the only context the TIS API works from.
+#
+# Refusing here rather than further down: without this the first failure is a copy of the wrong bundle name, or the app
+# rejecting an argument it no longer has, neither of which says what to do instead (Dio, 2026-09-22).
+if [ -z "${SQUIRREL_UPSTREAM_INSTALL:-}" ]; then
+  echo "This is upstream Squirrel's install step and does not install AquaType." >&2
+  echo "Build and install AquaType with packaging/build_app.sh, then the AquaType-<version>.pkg it produces." >&2
+  exit 1
+fi
+
+login_user=`/usr/bin/stat -f%Su /dev/console`
+squirrel_app_root="${DSTROOT}/Squirrel.app"
+squirrel_executable="${squirrel_app_root}/Contents/MacOS/Squirrel"
+rime_package_installer="${squirrel_app_root}/Contents/MacOS/rime-install"
+rime_shared_data_path="${squirrel_app_root}/Contents/SharedSupport"
+
+/usr/bin/sudo -u "${login_user}" /usr/bin/killall Squirrel > /dev/null || true
+
+"${squirrel_executable}" --register-input-source
+
+if [ -z "${RIME_NO_PREBUILD}" ]; then
+    pushd "${rime_shared_data_path}" > /dev/null
+    "${squirrel_executable}" --build
+    popd > /dev/null
+fi && (
+    /usr/bin/sudo -u "${login_user}" "${squirrel_executable}" --enable-input-source
+    /usr/bin/sudo -u "${login_user}" "${squirrel_executable}" --select-input-source
+)

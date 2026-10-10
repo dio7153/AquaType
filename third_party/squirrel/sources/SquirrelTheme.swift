@@ -1,0 +1,391 @@
+//
+//  SquirrelTheme.swift
+//  Squirrel
+//
+//  Created by Leo Liu on 5/9/24.
+//  Modified for AquaType by Dio Hsieh, 2026.
+//
+
+import AppKit
+
+final class SquirrelTheme {
+  static let offsetHeight: CGFloat = 5
+  static let defaultFontSize: CGFloat = NSFont.systemFontSize
+  /// How long the 中 / 英 badge stays up.  It has to be seen and then be gone: half a second is long enough to read one
+  /// character confirming something just done on purpose, while at 1.2 s the badge (drawn with the candidate panel's
+  /// own padding) was still over the text field after typing had resumed.
+  static let showStatusDuration: Double = 0.5
+  /// `userFont(ofSize:)` is documented to return nil when it cannot produce the font, and this is a stored static, so
+  /// a nil would trap the first time any theme property is read - which is inside the first panel draw, with nothing
+  /// on screen to say why.  The system font is what AppKit itself falls back to.
+  static let defaultFont = NSFont.userFont(ofSize: defaultFontSize) ?? .systemFont(ofSize: defaultFontSize)
+
+  enum StatusMessageType: String {
+    case long, short, mix
+  }
+  enum RimeColorSpace {
+    case displayP3, sRGB
+    static func from(name: String) -> Self {
+      if name == "display_p3" {
+        return .displayP3
+      } else {
+        return .sRGB
+      }
+    }
+  }
+
+  /// Whether the config this theme was loaded from named a colour scheme for this mode at all.  `SquirrelView` uses
+  /// the dark theme's answer to decide which of the two to draw with, so a config with `color_scheme` but no
+  /// `color_scheme_dark` keeps the light theme in dark mode, which is the intent.
+  ///
+  /// It starts true, so a theme that has never been loaded (squirrel.yaml could not be opened) says yes, which is
+  /// harmless: both themes are then the same defaults.
+  private(set) var available = true
+  private(set) var native = true
+  private(set) var memorizeSize = true
+  private var colorSpace: RimeColorSpace = .sRGB
+
+  var backgroundColor: NSColor = .windowBackgroundColor
+  var highlightedPreeditColor: NSColor?
+  var highlightedBackColor: NSColor? = .selectedTextBackgroundColor
+  var preeditBackgroundColor: NSColor?
+  var candidateBackColor: NSColor?
+  var borderColor: NSColor?
+
+  private var textColor: NSColor = .secondaryLabelColor
+  private var highlightedTextColor: NSColor = .labelColor
+  private var candidateTextColor: NSColor = .labelColor
+  private var highlightedCandidateTextColor: NSColor = .labelColor
+  private var candidateLabelColor: NSColor? = .secondaryLabelColor
+  private var highlightedCandidateLabelColor: NSColor? = .secondaryLabelColor
+  private var commentTextColor: NSColor? = .secondaryLabelColor
+  private var highlightedCommentTextColor: NSColor? = .secondaryLabelColor
+
+  private(set) var cornerRadius: CGFloat = 0
+  private(set) var hilitedCornerRadius: CGFloat = 0
+  private(set) var surroundingExtraExpansion: CGFloat = 0
+  private(set) var shadowSize: CGFloat = 0
+  private(set) var borderWidth: CGFloat = 0
+  private(set) var borderHeight: CGFloat = 0
+  private(set) var linespace: CGFloat = 0
+  private(set) var preeditLinespace: CGFloat = 0
+  private(set) var baseOffset: CGFloat = 0
+  private(set) var alpha: CGFloat = 1
+
+  private(set) var translucency = false
+  private(set) var mutualExclusive = false
+  private(set) var linear = false
+  private(set) var vertical = false
+  private(set) var inlinePreedit = false
+  private(set) var inlineCandidate = false
+  private(set) var showPaging = false
+  // When true, the candidate panel stays hidden while typing and appears only while candidates are being navigated
+  // (the arrows, Tab, Page Up/Down).  Set with `style/hide_panel: true`; AquaType's own theme does not set it.
+  private(set) var hidePanel = false
+
+  private var fonts = [NSFont]()
+  private var labelFonts = [NSFont]()
+  private var commentFonts = [NSFont]()
+  private var fontSize: CGFloat?
+  private var labelFontSize: CGFloat?
+  private var commentFontSize: CGFloat?
+
+  private var _candidateFormat = "[label]. [candidate] [comment]"
+  private(set) var statusMessageType: StatusMessageType = .mix
+
+  private var defaultFont: NSFont {
+    if let size = fontSize {
+      Self.defaultFont.withSize(size)
+    } else {
+      Self.defaultFont
+    }
+  }
+
+  private(set) lazy var font: NSFont = combineFonts(fonts, size: fontSize) ?? defaultFont
+  private(set) lazy var labelFont: NSFont = {
+    if let font = combineFonts(labelFonts, size: labelFontSize ?? fontSize) {
+      return font
+    } else if let size = labelFontSize {
+      return self.font.withSize(size)
+    } else {
+      return self.font
+    }
+  }()
+  private(set) lazy var commentFont: NSFont = {
+    if let font = combineFonts(commentFonts, size: commentFontSize ?? fontSize) {
+      return font
+    } else if let size = commentFontSize {
+      return self.font.withSize(size)
+    } else {
+      return self.font
+    }
+  }()
+  private(set) lazy var attrs: [NSAttributedString.Key: Any] = [
+    .foregroundColor: candidateTextColor,
+    .font: font,
+    .baselineOffset: baseOffset
+  ]
+  private(set) lazy var highlightedAttrs: [NSAttributedString.Key: Any] = {
+    // The highlighted candidate is shown by its fill colour; when `hilited_candidate_back_color` is fully transparent
+    // it is underlined instead.
+    var attrs: [NSAttributedString.Key: Any] = [
+      .foregroundColor: highlightedCandidateTextColor,
+      .font: font,
+      .baselineOffset: baseOffset
+    ]
+    let backAlpha = highlightedBackColor?.alphaComponent ?? 0
+    if backAlpha < 0.001 {
+      attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+      attrs[.underlineColor] = highlightedCandidateTextColor
+    }
+    return attrs
+  }()
+  private(set) lazy var labelAttrs: [NSAttributedString.Key: Any] = [
+    .foregroundColor: candidateLabelColor ?? blendColor(foregroundColor: self.candidateTextColor, backgroundColor: self.backgroundColor),
+    .font: labelFont,
+    .baselineOffset: baseOffset + (!vertical ? (font.pointSize - labelFont.pointSize) / 2.5 : 0)
+  ]
+  private(set) lazy var labelHighlightedAttrs: [NSAttributedString.Key: Any] = [
+    .foregroundColor: highlightedCandidateLabelColor ?? blendColor(foregroundColor: highlightedCandidateTextColor, backgroundColor: highlightedBackColor),
+    .font: labelFont,
+    .baselineOffset: baseOffset + (!vertical ? (font.pointSize - labelFont.pointSize) / 2.5 : 0)
+  ]
+  private(set) lazy var commentAttrs: [NSAttributedString.Key: Any] = [
+    .foregroundColor: commentTextColor ?? candidateTextColor,
+    .font: commentFont,
+    .baselineOffset: baseOffset + (!vertical ? (font.pointSize - commentFont.pointSize) / 2.5 : 0)
+  ]
+  private(set) lazy var commentHighlightedAttrs: [NSAttributedString.Key: Any] = [
+    .foregroundColor: highlightedCommentTextColor ?? highlightedCandidateTextColor,
+    .font: commentFont,
+    .baselineOffset: baseOffset + (!vertical ? (font.pointSize - commentFont.pointSize) / 2.5 : 0)
+  ]
+  private(set) lazy var preeditAttrs: [NSAttributedString.Key: Any] = [
+    .foregroundColor: textColor,
+    .font: font,
+    .baselineOffset: baseOffset
+  ]
+  private(set) lazy var preeditHighlightedAttrs: [NSAttributedString.Key: Any] = [
+    .foregroundColor: highlightedTextColor,
+    .font: font,
+    .baselineOffset: baseOffset
+  ]
+
+  private(set) lazy var firstParagraphStyle: NSParagraphStyle = {
+    let style = NSParagraphStyle.default.mutableCopy() as! NSMutableParagraphStyle
+    style.paragraphSpacing = linespace / 2
+    style.paragraphSpacingBefore = preeditLinespace / 2 + hilitedCornerRadius / 2
+    return style as NSParagraphStyle
+  }()
+  private(set) lazy var paragraphStyle: NSParagraphStyle = {
+    let style = NSParagraphStyle.default.mutableCopy() as! NSMutableParagraphStyle
+    style.paragraphSpacing = linespace / 2
+    style.paragraphSpacingBefore = linespace / 2
+    return style as NSParagraphStyle
+  }()
+  private(set) lazy var preeditParagraphStyle: NSParagraphStyle = {
+    let style = NSMutableParagraphStyle.default.mutableCopy() as! NSMutableParagraphStyle
+    style.paragraphSpacing = preeditLinespace / 2 + hilitedCornerRadius / 2
+    style.lineSpacing = linespace
+    return style as NSParagraphStyle
+  }()
+  private(set) lazy var edgeInset: NSSize = if self.vertical {
+    NSSize(width: borderHeight + cornerRadius, height: borderWidth + cornerRadius)
+  } else {
+    NSSize(width: borderWidth + cornerRadius, height: borderHeight + cornerRadius)
+  }
+  private(set) lazy var borderLineWidth: CGFloat = min(borderHeight, borderWidth)
+  private(set) var candidateFormat: String {
+    get {
+      _candidateFormat
+    } set {
+      var newTemplate = newValue
+      if newTemplate.contains(/%@/) {
+        newTemplate.replace(/%@/, with: "[candidate] [comment]")
+      }
+      if newTemplate.contains(/%c/) {
+        newTemplate.replace(/%c/, with: "[label]")
+      }
+      _candidateFormat = newTemplate
+    }
+  }
+  var pagingOffset: CGFloat {
+    if showPaging {
+      (labelFontSize ?? fontSize ?? Self.defaultFontSize) * 1.5
+    } else {
+      0
+    }
+  }
+
+  /// Fill this theme from a config.  **Call it once, on a theme nobody has read yet.**
+  ///
+  /// The fonts and the attribute dictionaries are `lazy` and read the fields this method writes, so a theme that has
+  /// been drawn from once has fixed them, and loading a second config into it would leave a theme that is half one
+  /// config and half the other.  `SquirrelPanel.load(config:forDarkMode:)`, the only caller, builds a new theme on the
+  /// line before it calls this; a second caller has to do the same.
+  func load(config: SquirrelConfig, dark: Bool) {
+    linear ?= config.getString("style/candidate_list_layout").map { $0 == "linear" }
+    vertical ?= config.getString("style/text_orientation").map { $0 == "vertical" }
+    inlinePreedit ?= config.getBool("style/inline_preedit")
+    inlineCandidate ?= config.getBool("style/inline_candidate")
+    translucency ?= config.getBool("style/translucency")
+    mutualExclusive ?= config.getBool("style/mutual_exclusive")
+    memorizeSize ?= config.getBool("style/memorize_size")
+    showPaging ?= config.getBool("style/show_paging")
+    hidePanel ?= config.getBool("style/hide_panel")
+
+    statusMessageType ?= .init(rawValue: config.getString("style/status_message_type") ?? "")
+    candidateFormat ?= config.getString("style/candidate_format")
+
+    alpha ?= config.getDouble("style/alpha").map { min(1, max(0, $0)) }
+    cornerRadius ?= config.getDouble("style/corner_radius")
+    hilitedCornerRadius ?= config.getDouble("style/hilited_corner_radius")
+    surroundingExtraExpansion ?= config.getDouble("style/surrounding_extra_expansion")
+    borderHeight ?= config.getDouble("style/border_height")
+    borderWidth ?= config.getDouble("style/border_width")
+    linespace ?= config.getDouble("style/line_spacing")
+    preeditLinespace ?= config.getDouble("style/spacing")
+    baseOffset ?= config.getDouble("style/base_offset")
+    shadowSize ?= config.getDouble("style/shadow_size").map { max(0, $0) }
+
+    var fontName = config.getString("style/font_face")
+    var fontSize = config.getDouble("style/font_point")
+    var labelFontName = config.getString("style/label_font_face")
+    var labelFontSize = config.getDouble("style/label_font_point")
+    var commentFontName = config.getString("style/comment_font_face")
+    var commentFontSize = config.getDouble("style/comment_font_point")
+
+    let colorSchemeOption = dark ? "style/color_scheme_dark" : "style/color_scheme"
+    if let colorScheme = config.getString(colorSchemeOption) {
+      if colorScheme != "native" {
+        native = false
+        let prefix = "preset_color_schemes/\(colorScheme)"
+        colorSpace = .from(name: config.getString("\(prefix)/color_space") ?? "")
+        backgroundColor ?= config.getColor("\(prefix)/back_color", inSpace: colorSpace)
+        highlightedPreeditColor = config.getColor("\(prefix)/hilited_back_color", inSpace: colorSpace)
+        highlightedBackColor = config.getColor("\(prefix)/hilited_candidate_back_color", inSpace: colorSpace) ?? highlightedPreeditColor
+        preeditBackgroundColor = config.getColor("\(prefix)/preedit_back_color", inSpace: colorSpace)
+        candidateBackColor = config.getColor("\(prefix)/candidate_back_color", inSpace: colorSpace)
+        borderColor = config.getColor("\(prefix)/border_color", inSpace: colorSpace)
+
+        textColor ?= config.getColor("\(prefix)/text_color", inSpace: colorSpace)
+        highlightedTextColor = config.getColor("\(prefix)/hilited_text_color", inSpace: colorSpace) ?? textColor
+        candidateTextColor = config.getColor("\(prefix)/candidate_text_color", inSpace: colorSpace) ?? textColor
+        highlightedCandidateTextColor = config.getColor("\(prefix)/hilited_candidate_text_color", inSpace: colorSpace) ?? highlightedTextColor
+        candidateLabelColor = config.getColor("\(prefix)/label_color", inSpace: colorSpace)
+        highlightedCandidateLabelColor = config.getColor("\(prefix)/hilited_candidate_label_color", inSpace: colorSpace)
+        commentTextColor = config.getColor("\(prefix)/comment_text_color", inSpace: colorSpace)
+        highlightedCommentTextColor = config.getColor("\(prefix)/hilited_comment_text_color", inSpace: colorSpace)
+
+        // the following per-color-scheme configurations, if exist, will
+        // override configurations with the same name under the global 'style'
+        // section
+        linear ?= config.getString("\(prefix)/candidate_list_layout").map { $0 == "linear" }
+        vertical ?= config.getString("\(prefix)/text_orientation").map { $0 == "vertical" }
+        inlinePreedit ?= config.getBool("\(prefix)/inline_preedit")
+        inlineCandidate ?= config.getBool("\(prefix)/inline_candidate")
+        translucency ?= config.getBool("\(prefix)/translucency")
+        mutualExclusive ?= config.getBool("\(prefix)/mutual_exclusive")
+        showPaging ?= config.getBool("\(prefix)/show_paging")
+        hidePanel ?= config.getBool("\(prefix)/hide_panel")
+        candidateFormat ?= config.getString("\(prefix)/candidate_format")
+        fontName ?= config.getString("\(prefix)/font_face")
+        fontSize ?= config.getDouble("\(prefix)/font_point")
+        labelFontName ?= config.getString("\(prefix)/label_font_face")
+        labelFontSize ?= config.getDouble("\(prefix)/label_font_point")
+        commentFontName ?= config.getString("\(prefix)/comment_font_face")
+        commentFontSize ?= config.getDouble("\(prefix)/comment_font_point")
+
+        alpha ?= config.getDouble("\(prefix)/alpha").map { max(0, min(1, $0)) }
+        cornerRadius ?= config.getDouble("\(prefix)/corner_radius")
+        hilitedCornerRadius ?= config.getDouble("\(prefix)/hilited_corner_radius")
+        surroundingExtraExpansion ?= config.getDouble("\(prefix)/surrounding_extra_expansion")
+        borderHeight ?= config.getDouble("\(prefix)/border_height")
+        borderWidth ?= config.getDouble("\(prefix)/border_width")
+        linespace ?= config.getDouble("\(prefix)/line_spacing")
+        preeditLinespace ?= config.getDouble("\(prefix)/spacing")
+        baseOffset ?= config.getDouble("\(prefix)/base_offset")
+        shadowSize ?= config.getDouble("\(prefix)/shadow_size").map { max(0, $0) }
+      }
+    } else {
+      available = false
+    }
+
+    fonts = decodeFonts(from: fontName)
+    self.fontSize = fontSize
+    labelFonts = decodeFonts(from: labelFontName ?? fontName)
+    self.labelFontSize = labelFontSize
+    commentFonts = decodeFonts(from: commentFontName ?? fontName)
+    self.commentFontSize = commentFontSize
+  }
+}
+
+private extension SquirrelTheme {
+  func combineFonts(_ fonts: [NSFont], size: CGFloat?) -> NSFont? {
+    if fonts.count == 0 { return nil }
+    if fonts.count == 1 {
+      if let size = size {
+        return fonts[0].withSize(size)
+      } else {
+        return fonts[0]
+      }
+    }
+    let attribute = [NSFontDescriptor.AttributeName.cascadeList: fonts[1...].map { $0.fontDescriptor } ]
+    let fontDescriptor = fonts[0].fontDescriptor.addingAttributes(attribute)
+    return NSFont.init(descriptor: fontDescriptor, size: size ?? fonts[0].pointSize)
+  }
+
+  /// `Family-Style`, as `font_face` is written.  Built once for the same reason the colour patterns in
+  /// `SquirrelConfig` are: a regex literal compiles a fresh matcher every time it is evaluated, and this one is
+  /// evaluated for each font name, in each of the three font fields, in each of the two themes, on every schema
+  /// change.
+  static let familyStylePattern = /^\s*(.+)-([^-]+)\s*$/
+
+  func decodeFonts(from fontString: String?) -> [NSFont] {
+    guard let fontString = fontString else { return [] }
+    var seenFontFamilies = Set<String>()
+    let fontStrings = fontString.split(separator: ",")
+    var fonts = [NSFont]()
+    for string in fontStrings {
+      if let matchedFontName = try? Self.familyStylePattern.firstMatch(in: string) {
+        // Trimmed, because the pattern does not do it despite appearances: the greedy captures keep a space before the
+        // last dash and after the style.  `NSFontDescriptor` accepts a trailing space in `.face` but finds no font for
+        // one in `.family` ("Helvetica -Bold"), so both are trimmed.
+        let family = String(matchedFontName.output.1).trimmingCharacters(in: .whitespaces)
+        let style = String(matchedFontName.output.2).trimmingCharacters(in: .whitespaces)
+        if seenFontFamilies.contains(family) { continue }
+        let fontDescriptor = NSFontDescriptor(fontAttributes: [.family: family, .face: style])
+        if let font = NSFont(descriptor: fontDescriptor, size: Self.defaultFontSize) {
+          fonts.append(font)
+          seenFontFamilies.insert(family)
+          continue
+        }
+      }
+      let fontName = string.trimmingCharacters(in: .whitespaces)
+      if seenFontFamilies.contains(fontName) { continue }
+      let fontDescriptor = NSFontDescriptor(fontAttributes: [.name: fontName])
+      if let font = NSFont(descriptor: fontDescriptor, size: Self.defaultFontSize) {
+        fonts.append(font)
+        seenFontFamilies.insert(fontName)
+        continue
+      }
+    }
+    return fonts
+  }
+
+  /// The label colour when the scheme does not give one: two parts text to one part background.
+  ///
+  /// The two force unwraps are safe: `usingColorSpace` returns nil only for a pattern colour (made from an image), and
+  /// every colour that reaches here is an AppKit catalog colour or one `SquirrelConfig` built from `0xAABBGGRR`.
+  func blendColor(foregroundColor: NSColor, backgroundColor: NSColor?) -> NSColor {
+    let foregroundColor = foregroundColor.usingColorSpace(NSColorSpace.deviceRGB)!
+    let backgroundColor = (backgroundColor ?? NSColor.gray).usingColorSpace(NSColorSpace.deviceRGB)!
+    func blend(foreground: CGFloat, background: CGFloat) -> CGFloat {
+      return (foreground * 2 + background) / 3
+    }
+    return NSColor(deviceRed: blend(foreground: foregroundColor.redComponent, background: backgroundColor.redComponent),
+                   green: blend(foreground: foregroundColor.greenComponent, background: backgroundColor.greenComponent),
+                   blue: blend(foreground: foregroundColor.blueComponent, background: backgroundColor.blueComponent),
+                   alpha: blend(foreground: foregroundColor.alphaComponent, background: backgroundColor.alphaComponent))
+  }
+}

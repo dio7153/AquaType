@@ -1,0 +1,44 @@
+# macOS / editor noise
+.DS_Store
+.vscode/
+
+# Swift / Xcode build products (.build/: swift build and the MLX runtime build_app.sh fetches;
+# build/: third_party/squirrel/build, xcodebuild's derived data)
+.build/
+build/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv*
+
+# Build output: dist/<name>/ with the installer packages, the zip and the inventory
+dist/
+
+# Compressed payloads and ML binaries
+*.pkg
+*.dmg
+*.safetensors
+*.bin
+*.aqds
+*.pt
+*.pth
+*.tgz
+*.tar
+*.tar.gz
+*.zip
+*.mlpackage/
+
+# Local state and secrets
+.aquatype/
+.env.local
+.secrets/
+
+# Build products, rebuilt by decoder/native/build_dylib.sh and packaging/build_app.sh.
+decoder/native/libaquadecoder.dylib
+# Large payload binaries: kept out of git and restored from a released package by packaging/restore_payload.sh;
+# packaging/payload/SHA256SUMS pins them.
+packaging/payload/dict_store/*.aqds
+# tables.safetensors is small (under 1 MB) and the build cannot run without it, unlike the model weights.
+!packaging/payload/decoder/tables.safetensors

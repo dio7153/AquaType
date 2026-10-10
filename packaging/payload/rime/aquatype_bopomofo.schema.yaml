@@ -1,0 +1,62 @@
+# Rime schema settings
+# encoding: utf-8
+---
+schema:
+  schema_id: aquatype_bopomofo
+  name: "AquaType"
+  version: "20260505"
+  author:
+    - "Dio Hsieh"
+  description: |
+    AquaType's Rime settings: the Chinese/English switch, and librime's own conversion for a commit that comes before
+    the engine has answered.
+
+switches:
+  - name: ascii_mode
+    states: ["中", "A"]   # no reset: the input method carries the chosen mode from one text field to the next
+
+# librime does two things here: the Chinese/English switch, and converting the typed keys itself when a commit comes
+# before AquaType's engine has answered.  Correction, candidates, punctuation and memory are the input method's own.
+engine:
+  processors:
+    - ascii_composer
+    - speller
+    - selector
+    - navigator
+    - fluency_editor
+  segmentors:
+    - ascii_segmentor
+    - abc_segmentor
+    - fallback_segmentor
+  translators:
+    - script_translator
+  filters:
+    - uniquifier
+
+menu:
+  # Set so that librime never takes 1 to 9 as select keys: on this layout they are bopomofo keys.  Shift with 1 to 9
+  # is punctuation, typed by the input method before librime sees it.
+  alternative_select_keys: "!@#$%^&*("
+
+speller:
+  alphabet: "1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/- 6347"
+  initials: "1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/-"
+  finals: " 6347"
+  delimiter: "\t"   # not the apostrophe: that is a key people type
+  use_space: true
+  algebra:
+    __patch:
+      - zhuyin:/pinyin_to_zhuyin
+      - zhuyin:/free_order
+      - zhuyin:/abbreviation
+      - zhuyin:/keymap_bopomofo
+
+translator:
+  dictionary: aquatype.extended
+  prism: aquatype_bopomofo
+  enable_completion: false
+  max_homophones: 7
+  enable_user_dict: false  # AquaType's personal memory is the only place commits are remembered
+  preedit_format:
+    - "xlit|1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/- 6347|ㄅㄆㄇㄈㄉㄊㄋㄌㄍㄎㄏㄐㄑㄒㄓㄔㄕㄖㄗㄘㄙㄧㄨㄩㄚㄛㄜㄝㄞㄟㄠㄡㄢㄣㄤㄥㄦˉˊˇˋ˙|"
+...

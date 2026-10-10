@@ -1,0 +1,40 @@
+name: Commit CI
+
+on:
+  push:
+    branches:
+      - '**'
+    tags-ignore:
+      - '**'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout last commit
+        uses: actions/checkout@v5
+
+      - name: Install clang-format-18
+        run: |
+          ./action-install-clang-format.sh 18
+
+      - name: Code style lint
+        run: make clang-format-lint
+
+  linux:
+    needs: lint
+    uses: ./.github/workflows/linux-build.yml
+
+  macos:
+    needs: lint
+    uses: ./.github/workflows/macos-build.yml
+
+  windows:
+    needs: lint
+    uses: ./.github/workflows/windows-build.yml
+
+  docker:
+    needs: lint
+    uses: ./.github/workflows/docker-build.yml

@@ -1,0 +1,125 @@
+{
+  "binary_bytes": 62374912,
+  "binary_sha256": "6fbe62f2359ad4a1c239ac7124adb5c1d135bf584239022c91b7e15342b586ea",
+  "builder": {
+    "implementation_sha256": "4c611268ba579e8f0d7eff687c8fb5b904e29461a2ad9cfe4947ed24eda20add",
+    "name": "aquatype-dict-compact-builder",
+    "python": "3.11.13",
+    "regex": "2.5.162",
+    "sqlite": "3.50.2",
+    "unicode": "14.0.0",
+    "version": 1
+  },
+  "counts": {
+    "best_hash_slots": 1048576,
+    "best_text_keys": 811773,
+    "raw_hash_slots": 1048576,
+    "raw_keys": 718731,
+    "raw_strings": 719937,
+    "rows": 820011,
+    "source_valid_rows": 1217126,
+    "source_valid_rows_by_file": [
+      369029,
+      622778,
+      139472,
+      70828,
+      15019
+    ],
+    "text_strings": 811773
+  },
+  "endian": "little",
+  "format": "aquatype-dict-compact",
+  "hash_index": {
+    "algorithm": "fnv1a64-linear-u20-fp4-v1",
+    "empty_slot": 0,
+    "max_load": "7/8",
+    "stored_value": "high4_fingerprint_and_sorted_u20_index_plus_one"
+  },
+  "kind": "fallback",
+  "payload_sha256": "3f4345abda33d40e10b66f4a707ca9961a0ef0e76b53413c54ed59bddcdb8e3f",
+  "probe_queries": {
+    "bytes": 1120786,
+    "classes": {
+      "exact": 60000,
+      "miss": 20000,
+      "prefix": 20000
+    },
+    "name": "fallback_probe_queries.v1.txt",
+    "rows": 100000,
+    "seed": 20260710,
+    "sha256": "8dfe91eff12f18a4f6907019f5bfffa9eda8378c720bb69e8a25e57ff1260721"
+  },
+  "sections": {
+    "best_hash": {
+      "bytes": 3145728,
+      "count": 1048576,
+      "offset": 27765856,
+      "record_bytes": 3
+    },
+    "best_index": {
+      "bytes": 16235460,
+      "count": 811773,
+      "offset": 30911584,
+      "record_bytes": 20
+    },
+    "raw_blob": {
+      "bytes": 7351593,
+      "count": 7351593,
+      "offset": 47147044,
+      "record_bytes": 1
+    },
+    "raw_hash": {
+      "bytes": 3145728,
+      "count": 1048576,
+      "offset": 256,
+      "record_bytes": 3
+    },
+    "raw_index": {
+      "bytes": 11499696,
+      "count": 718731,
+      "offset": 3145984,
+      "record_bytes": 16
+    },
+    "rows": {
+      "bytes": 13120176,
+      "count": 820011,
+      "offset": 14645680,
+      "record_bytes": 16
+    },
+    "text_blob": {
+      "bytes": 7876275,
+      "count": 7876275,
+      "offset": 54498637,
+      "record_bytes": 1
+    }
+  },
+  "source_aggregate_sha256": "410d6913c81873f264f33fb7010a7eaf88b90c3af61ec3e15a80c525b0fb1317",
+  "sources": [
+    {
+      "bytes": 9688623,
+      "name": "aquatype_lexicon.dict.yaml",
+      "sha256": "e7d0635d2ea2e7581e43c5dc9de5af22b09dd78c396b8e1a69ccc3d040bfee7d"
+    },
+    {
+      "bytes": 17890422,
+      "name": "aquatype_phrases.dict.yaml",
+      "sha256": "934d7a31820b8cb013e836bb3b6f09759a46a4ffa1e11992d97fc037b5714dbc"
+    },
+    {
+      "bytes": 3984788,
+      "name": "aquatype_mcbopomofo.dict.yaml",
+      "sha256": "36d2cf0363664ff0b177960db08f8b97e18210c673cc7dda4273c936ec0506df"
+    },
+    {
+      "bytes": 1523773,
+      "name": "terra_pinyin.dict.yaml",
+      "sha256": "dd0534697c0311d37243c9ce343e09b8f0249dc9ae06c16d727e66f129d0c041"
+    },
+    {
+      "bytes": 526501,
+      "name": "aquatype_variants.dict.yaml",
+      "sha256": "8dbf6b8b77a8fa2ac14a48de3728b45b42b426ded79db8f0f3e5a15e3cf93cb8"
+    }
+  ],
+  "version": 2
+}

@@ -1,0 +1,23 @@
+AquaType
+Copyright (c) 2026 Dio Hsieh
+
+AquaType is made of parts under different licenses:
+
+- The input method (third_party/squirrel/) is a modified version of Squirrel and
+  is licensed under the GNU General Public License version 3.
+  See third_party/squirrel/LICENSE.txt.
+
+- The engine and the decoder (Package.swift, Sources/, decoder/, scripts/ and the
+  build scripts in packaging/) are licensed under the Apache License, Version 2.0.
+  See packaging/legal/LICENSE-Apache-2.0.txt.
+
+- The trained model and the decoder tables (packaging/payload/decoder/, and the
+  model files packaging/restore_payload.sh restores there) are licensed under the
+  Creative Commons Attribution-NonCommercial 4.0 International license.
+  See packaging/legal/LICENSE-CC-BY-NC-4.0.txt.
+
+- The dictionary data (packaging/payload/rime/, packaging/payload/dict_store/ and
+  data/) is compiled from several sources, each under its own license.
+
+NOTICE.txt lists every part, the third-party libraries and data AquaType includes,
+and their licenses.

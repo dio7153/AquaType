@@ -1,0 +1,132 @@
+#! /bin/bash
+# enconding: utf-8
+
+set -e
+
+cd "$(dirname $0)"
+source common.sh
+
+app_version="$(get_app_version)"
+target_pkg="Squirrel-${app_version}.pkg"
+download_url="https://github.com/rime/squirrel/releases/download/${app_version}/${target_pkg}"
+
+verify_archive() {
+    if ! [ -f "${target_pkg}" ]; then
+        echo >&2 "ERROR: file does not exit: ${target_pkg}"
+        exit 1
+    fi
+    echo 'sha256 checksum:'
+    echo "${checksum}  ${target_pkg}"
+    shasum -a 256 -c <<<"${checksum}  ${target_pkg}" || exit 1
+}
+
+create_archive() {
+    if [ -e "${target_pkg}" ]; then
+        echo >&2 "ERROR: target archive already exists: ${target_pkg}"
+        exit 1
+    fi
+    cp Squirrel.pkg "${target_pkg}"
+    echo 'sha256 checksum:'
+    shasum -a 256 "${target_pkg}"
+}
+
+if [ -n "${checksum}" ]; then
+    verify_archive
+else
+    create_archive
+fi
+
+if signature=$(./sign_update "${target_pkg}"); then
+    echo "sign update is successful."
+else
+    echo "sign_update not working, skiping signing update."
+    exit 0
+fi
+edSignature=$(echo $signature | awk -F'"' '{print $2}')
+length=$(echo $signature | awk -F'"' '{print $4}')
+pub_date=$(date -R)
+
+# for release channel
+appcast_file='appcast.xml'
+
+cat > "${appcast_file}" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>【鼠鬚管】輸入法更新頻道</title>
+    <link>https://rime.github.io/release/squirrel/appcast.xml</link>
+    <description>鼠鬚管 Appcast 更新頻道</description>
+    <language>zh</language>
+    <item>
+      <title>鼠鬚管 ${app_version}</title>
+      <sparkle:releaseNotesLink>https://rime.github.io/release/squirrel/</sparkle:releaseNotesLink>
+      <sparkle:minimumSystemVersion>13.0.0</sparkle:minimumSystemVersion>
+      <pubDate>${pub_date}</pubDate>
+      <enclosure url="${download_url}"
+                 sparkle:version="${app_version}"
+                 sparkle:edSignature="${edSignature}"
+                 length="${length}"
+                 type="application/octet-stream"/>
+    </item>
+  </channel>
+</rss>
+EOF
+
+ls -l ${appcast_file}
+
+# for testing channel
+appcast_file='testing-appcast.xml'
+
+cat > "${appcast_file}" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>【鼠鬚管】輸入法測試頻道</title>
+    <link>https://rime.github.io/testing/squirrel/appcast.xml</link>
+    <description>鼠鬚管測試版 Appcast 更新頻道</description>
+    <language>zh</language>
+    <item>
+      <title>鼠鬚管 ${app_version}</title>
+      <sparkle:releaseNotesLink>https://rime.github.io/testing/squirrel/</sparkle:releaseNotesLink>
+      <sparkle:minimumSystemVersion>13.0.0</sparkle:minimumSystemVersion>
+      <pubDate>${pub_date}</pubDate>
+      <enclosure url="${download_url}"
+                 sparkle:version="${app_version}"
+                 sparkle:edSignature="${edSignature}"
+                 length="${length}"
+                 type="application/octet-stream"/>
+    </item>
+  </channel>
+</rss>
+EOF
+
+ls -l ${appcast_file}
+
+# for testing appcast push locally.
+appcast_file='debug-appcast.xml'
+download_url="file://${PROJECT_ROOT}/package/${target_pkg}"
+
+cat > "${appcast_file}" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>【鼠鬚管】輸入法本地測試</title>
+    <link>file://${PROJECT_ROOT}/package/${appcast_file}</link>
+    <description>鼠鬚管 Appcast 更新本地測試</description>
+    <language>zh</language>
+    <item>
+      <title>鼠鬚管 ${app_version}</title>
+      <sparkle:releaseNotesLink>https://rime.github.io/testing/squirrel/</sparkle:releaseNotesLink>
+      <sparkle:minimumSystemVersion>10.9.0</sparkle:minimumSystemVersion>
+      <pubDate>${pub_date}</pubDate>
+      <enclosure url="${download_url}"
+                 sparkle:version="${app_version}"
+                 sparkle:edSignature="${edSignature}"
+                 length="${length}"
+                 type="application/octet-stream"/>
+    </item>
+  </channel>
+</rss>
+EOF
+
+ls -l ${appcast_file}

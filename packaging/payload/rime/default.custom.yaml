@@ -1,0 +1,28 @@
+# AquaType's settings for librime as a whole.  librime does two things here (see aquatype_bopomofo.schema.yaml): the
+# Chinese/English mode, and the conversion for a commit that comes before the engine has answered.  The keys the input
+# method handles itself - bopomofo, punctuation, candidates, a bare Shift - never reach librime.
+
+patch:
+  # The Chinese/English switch is a bare Shift, which the input method handles itself
+  # (SquirrelInputController.aquaTypeToggleAsciiModeFromBareShift).  So librime switches on no key of its own: a Shift
+  # it does see is part of a chord, such as Control+Shift, and must not change the mode.  Caps Lock is left to macOS.
+  ascii_composer:
+    good_old_caps_lock: false
+    switch_key:
+      Shift_L: noop
+      Shift_R: noop
+      Caps_Lock: noop
+      Control_L: noop
+      Control_R: noop
+
+  schema_list:
+    - schema: aquatype_bopomofo
+
+  # No key opens librime's schema menu.  Its defaults are Control+`, Control+Shift+` and F4, and the menu has nothing to
+  # offer here - one schema, and a Chinese/English switch that Shift already is - while the keys belong to applications:
+  # Control+` is VS Code's terminal.
+  switcher/hotkeys: []
+
+  # The Chinese/English mode carries across text fields and applications: the input method keeps the one chosen last
+  # and sets it in every new librime session (SquirrelInputController.aquaTypeApplyChosenAsciiMode).  librime's own
+  # saving of options happens only through its switcher menu, which has no hotkey here.

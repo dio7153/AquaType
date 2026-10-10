@@ -1,0 +1,9 @@
+# Python packages packaging/build_app.sh needs (Python 3.11, Apple silicon).
+# mlx: decoder/native/build_dylib.sh compiles and links against its headers and libmlx; its version is the
+#      MLX runtime the app ships (build_app.sh fetches the macOS 14 build of the same mlx-metal release).
+# numpy: imported by decoder/core/types.py, which decoder/tests/test_engine.py reaches through decoder/mlx/entry.py.
+# pytest: runs decoder/tests/test_engine.py against the bundle.
+mlx==0.32.2
+mlx-metal==0.32.2
+numpy==2.3.4
+pytest==8.4.2

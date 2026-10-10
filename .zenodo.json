@@ -1,0 +1,19 @@
+{
+  "title": "AquaType",
+  "upload_type": "software",
+  "description": "<p>A Zhuyin input method for Mac that suggests the right words even when you press the wrong keys. Built on RIME (Squirrel), with a noisy-channel decoding engine that runs entirely on device.</p><p>AquaType is made of parts under different licenses: the input method (a modified version of Squirrel) under GPL-3.0, the engine and the decoder under Apache-2.0, and the trained model under CC BY-NC 4.0. See LICENSE and NOTICE.txt.</p>",
+  "creators": [
+    { "name": "Hsieh, Dio" }
+  ],
+  "license": "other-open",
+  "keywords": [
+    "input method",
+    "Zhuyin",
+    "Bopomofo",
+    "Traditional Chinese",
+    "typo correction",
+    "noisy channel",
+    "on-device machine learning",
+    "macOS"
+  ]
+}

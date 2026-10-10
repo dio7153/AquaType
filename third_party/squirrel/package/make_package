@@ -1,0 +1,19 @@
+#!/bin/bash
+
+DERIVED_DATA_PATH=$1
+BUNDLE_IDENTIFIER='com.aquatype.inputmethod.AquaType'
+INSTALL_LOCATION='/Library/Input Methods'
+
+cd "$(dirname $0)"
+source common.sh
+
+pkgbuild \
+    --info PackageInfo \
+    --root "${PROJECT_ROOT}/${DERIVED_DATA_PATH}/Build/Products/Release" \
+    --filter '.*\.swiftmodule$' \
+    --component-plist Squirrel-component.plist \
+    --identifier "${BUNDLE_IDENTIFIER}" \
+    --version "$(get_app_version)" \
+    --install-location "${INSTALL_LOCATION}" \
+    --scripts "${PROJECT_ROOT}/scripts" \
+    Squirrel.pkg

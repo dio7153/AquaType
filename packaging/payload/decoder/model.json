@@ -1,0 +1,52 @@
+{
+ "format": "aquatype-v2/1",
+ "syl": {
+  "d": 1024,
+  "layers": 12,
+  "heads": 16,
+  "n_keys": 44,
+  "n_syl": 1784,
+  "char_head": true,
+  "syl_head": true,
+  "n_char": 14513,
+  "ln_eps": 1e-12,
+  "quant": {
+   "bits": 4,
+   "group_size": 64
+  }
+ },
+ "chr": {
+  "d": 384,
+  "layers": 6,
+  "heads": 6,
+  "vocab": 14517,
+  "ln_eps": 1e-05,
+  "PAD": 0,
+  "BOS": 1,
+  "EOS": 2,
+  "UNK": 3,
+  "OFF": 4,
+  "max_len": 128
+ },
+ "beam": {
+  "U": 160,
+  "W": 512,
+  "topk": 128,
+  "floor": -12.0,
+  "span_weight": 0.5,
+  "read_prior": 0.25,
+  "margin": 12.0,
+  "g_weight": 1.0,
+  "K": 256,
+  "out": 64,
+  "max_nodes": 4000000
+ },
+ "source": {
+  "keylm": "keylm_380000.pt",
+  "keylm_sha256": "39d675c19bcbcda6e89d3057d89a71529451e65e4a0357fe0fb74f5631f921de",
+  "keylm_step": 380000,
+  "charlm": "charlm_200000.pt",
+  "charlm_sha256": "01977db19825ecba13f1f9237a692ae8b22616cb453b923d1951ee343668a546",
+  "charlm_step": 200000
+ }
+}

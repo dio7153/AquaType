@@ -1,0 +1,42 @@
+name: 問題回報 Bug report
+description: 回報 AquaType 的問題 Report a problem with AquaType
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: 發生了什麼事？ What happened?
+      description: 請說明你預期的結果與實際的結果。如果是候選不正確，請附上你輸入的注音與想輸入的字詞。 Describe what you expected and what happened instead. For wrong suggestions, include the Zhuyin you typed and the words you meant.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 重現步驟 Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+  - type: input
+    id: macos
+    attributes:
+      label: macOS 版本 macOS version
+      placeholder: macOS Sequoia 15.6
+    validations:
+      required: true
+  - type: input
+    id: mac
+    attributes:
+      label: Mac 機型 Mac model
+      placeholder: MacBook Air (M3)
+    validations:
+      required: true
+  - type: input
+    id: app
+    attributes:
+      label: 發生問題的 App The app where it happened
+      placeholder: 備忘錄 Notes
+  - type: input
+    id: version
+    attributes:
+      label: AquaType 版本 AquaType version
+      value: 0.9.0

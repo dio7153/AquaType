@@ -1,0 +1,83 @@
+AquaType
+Copyright (c) 2026 Dio Hsieh
+
+AquaType is made of parts under different licences.  The full text of every licence
+named here is in this folder: LICENSE-GPL-3.0.txt, LICENSE-LGPL-3.0.txt,
+LICENSE-Apache-2.0.txt, LICENSE-CC-BY-NC-4.0.txt, LICENSE-MLX.txt, and
+THIRD-PARTY-LICENSES.txt for the libraries and data whose licences ask for their own
+notice to be reproduced.
+
+1. The input method application (AquaType.app, its executable and user interface)
+   is a modified version of Squirrel (https://github.com/rime/squirrel) by
+   佛振 (Lotem) and the Squirrel contributors, and is distributed under the GNU
+   General Public License version 3 (LICENSE-GPL-3.0.txt). The complete
+   corresponding source code is published with each release.
+
+   It includes librime 1.16.0 (https://rime.im, BSD-3-Clause) and the libraries
+   compiled into it: Boost (Boost Software License 1.0), darts-clone (BSD),
+   glog (BSD-3-Clause), LevelDB (BSD-3-Clause), marisa-trie (BSD-2-Clause),
+   OpenCC (Apache-2.0) with RapidJSON (MIT), UTF8-CPP (Boost Software License 1.0)
+   and yaml-cpp (MIT).  Rime's base settings, its bopomofo spelling rules and its
+   word-frequency list essay.txt (Contents/SharedSupport, from
+   https://github.com/rime/rime-prelude, https://github.com/rime/rime-bopomofo and
+   https://github.com/rime/rime-essay) are under the GNU Lesser General Public
+   License version 3.
+
+2. The AquaType engine and the neural decoder (Contents/Resources/AquaTypeEngine
+   and lib/libaquadecoder.dylib) are licensed under the Apache License, Version
+   2.0.  The engine is a separate program that the input method starts and talks
+   to over a pipe.
+
+   The trained model (Contents/Resources/AquaTypeDecoder/) is licensed under the
+   Creative Commons Attribution-NonCommercial 4.0 International licence
+   (LICENSE-CC-BY-NC-4.0.txt): it may be used, shared and adapted for
+   non-commercial purposes, with attribution.  Some of the text it was trained on
+   is licensed for non-commercial use only.  The model was trained from scratch;
+   no pretrained model was used.
+
+3. MLX 0.32.2 (https://github.com/ml-explore/mlx, lib/libmlx.dylib and
+   lib/mlx.metallib), Copyright (c) 2023 Apple Inc., MIT License, with the
+   libraries compiled into it: {fmt} (MIT), JSON for Modern C++ (MIT), gguf-tools
+   (MIT), PocketFFT (BSD-3-Clause) and metal-cpp (Apache-2.0).
+
+4. Dictionary data (Contents/Resources/rime/ and AquaTypeData/) is AquaType's own
+   compilation of the following sources, each under its own licence.  The files
+   that draw on CC BY-SA sources - rime/aquatype_lexicon.dict.yaml,
+   rime/aquatype_variants.dict.yaml, rime/terra_pinyin.dict.yaml and
+   AquaTypeData/dictionary_fallback.v1.aqds, built from the rime files - are
+   distributed under CC BY-SA 3.0 as well.
+
+   Readings (which bopomofo a word or character is typed with):
+   - McBopomofo (https://github.com/openvanilla/McBopomofo), MIT License
+   - 教育部《重編國語辭典修訂本》 (Ministry of Education, Taiwan), CC BY-ND 3.0 TW,
+     via g0v/moedict-data (https://github.com/g0v/moedict-data), whose format
+     conversion and later use the Ministry has stated are not restricted by the
+     no-derivatives term
+   - rime-terra-pinyin (https://github.com/rime/rime-terra-pinyin) by 佛振 (Lotem),
+     LGPL-3.0, itself drawing on CC-CEDICT (CC BY-SA 3.0); shipped as
+     rime/terra_pinyin.dict.yaml without the characters AquaType does not use,
+     with the character forms Taiwan does not write rewritten to Taiwan's and
+     weights from rime-essay's essay.txt (LGPL-3.0)
+   - pypinyin (https://github.com/mozillazg/python-pinyin) and its pinyin-data and
+     phrase-pinyin-data, MIT License
+
+   Words:
+   - sc-dictionary (https://github.com/samejack/sc-dictionary) by SJ Chou,
+     CC BY 3.0 TW: its Traditional Chinese words (rime/aquatype_phrases.dict.yaml)
+   - AquaType's word list (rime/aquatype_lexicon.dict.yaml), drawn from:
+     McBopomofo (MIT); the Ministry of Education's Revised and Concise Mandarin
+     Chinese Dictionaries (CC BY-ND 3.0 TW); jieba (https://github.com/fxsjy/jieba,
+     MIT); CC-CEDICT (https://cc-cedict.org, CC BY-SA 3.0); the titles of Chinese
+     Wikipedia and Wiktionary (CC BY-SA); ICU's cjdict
+     (https://github.com/unicode-org/icu; BSD, with the libtabe and IPADIC
+     terms); libchewing's phrase table and its counts
+     (https://github.com/chewing/libchewing, LGPL-2.1-or-later, used under
+     LGPL-3.0); Tatoeba (https://tatoeba.org, CC BY 2.0 FR); Chinese-Names-Corpus
+     (https://github.com/wainshine/Chinese-Names-Corpus, Apache-2.0); and
+     Taiwan's county, district and road names, compiled from Chunghwa Post's
+     address data in
+     https://github.com/donma/TaiwanAddressCityAreaRoadChineseEnglishJSON
+     (MIT License)
+
+The training data of the model is listed in the model card published with the
+source code.

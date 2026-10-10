@@ -1,0 +1,66 @@
+name: release ci
+on:
+  push:
+    tags:
+      - '*'
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    env:
+      SQUIRREL_BUNDLED_RECIPES: 'lotem/rime-octagram-data lotem/rime-octagram-data@hant'
+    steps:
+      - name: Checkout last commit
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: true
+
+      - name: Install SwiftLint
+        run: brew install swiftlint
+
+      - name: Lint
+        run: swiftlint
+
+      - name: Build Squirrel
+        env:
+          ARCHS: 'arm64 x86_64'
+        run: ./action-build.sh archive
+
+      - name: Install periphery
+        run: brew install peripheryapp/periphery/periphery
+
+      - name: Check Unused Code
+        run: periphery scan --relative-results --skip-build --index-store-path build/Index.noindex/DataStore
+
+      - name: Build changelog
+        id: release_log
+        run: |
+          echo 'changelog<<EOF' >> $GITHUB_OUTPUT
+          ./action-changelog.sh >> $GITHUB_OUTPUT
+          echo 'EOF' >> $GITHUB_OUTPUT
+        if: startsWith(github.ref, 'refs/tags/')
+
+      - name: Create release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "package/Squirrel-*.pkg"
+          body: |
+            ${{ steps.release_log.outputs.changelog }}
+          draft: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create nightly release
+        if: ${{ github.repository == 'rime/squirrel' && github.ref == 'refs/heads/master' }}
+        uses: 'marvinpinto/action-automatic-releases@latest'
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          automatic_release_tag: latest
+          prerelease: true
+          title: "Nightly build"
+          files: |
+            package/Squirrel-*.pkg

@@ -1,0 +1,8 @@
+# Rime dictionary
+# encoding: utf-8
+# Words to raise in librime's own conversion.  Empty: nothing is raised.
+---
+name: aquatype_boost
+version: "20261008"
+sort: by_weight
+...
