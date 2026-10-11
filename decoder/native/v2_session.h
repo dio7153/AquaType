@@ -120,6 +120,15 @@ private:
     // Candidates are read from the beam at the last position, which expands no children, so a wider pool there costs one
     // step's extra rows and nothing else.
     int final_u_ = 1024;
+    // Speed tiers (CPU builds): accurate (U 64 / final 192) or fast (48 / 128).  With AQ_TIER unset (auto) the session
+    // keeps the last keystrokes' decode times and, between sentences only, moves to fast when their median is over
+    // tier_slow_ms_ and back to accurate when it is under tier_fast_ms_.  AQ_TIER=fast|accurate, or AQ_BEAM_U /
+    // AQ_FINAL_U, fix the widths instead.
+    bool tier_auto_ = false, tier_fast_ = false;
+    double tier_slow_ms_ = 150, tier_fast_ms_ = 70;
+    std::vector<float> key_ms_;                                // the latest decode times, at most 32
+    void set_tier(bool fast);
+    void note_key_ms(double ms);
     struct PrevBeam { std::vector<char> nodes; std::vector<std::vector<int>> at; std::string keys, ctx; int nk = 0; } prev_;
     // maintain() compacts the K/V table once it holds more than this many rows.  A decode adds 2-5k with the window;
     // compacting more often drops hidden states the next keystroke has to recompute, less often raises the footprint.

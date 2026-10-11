@@ -45,7 +45,7 @@ public:
                  const std::vector<uint16_t>& part_hidden, const std::vector<float>& part_lse) const;
     mutable double prof_build_ms = 0, prof_eval_ms = 0; mutable long prof_steps = 0;
 private:
-    struct Lin { cpu::QWeight q; cpu::Packed pk; std::vector<float> w, b; int out = 0, in = 0; bool quant = false; };   // quantised or packed fp32 weight (w kept only where rows are picked from it), fp32 bias
+    struct Lin { cpu::QWeight q; cpu::Packed pk; cpu::I8Weight w8; std::vector<float> w, b; int out = 0, in = 0; bool quant = false, i8 = false; };   // quantised, int8 or packed fp32 weight (w kept only where rows are picked from it), fp32 bias
     struct SylLayer { Lin q, k, v, o, ff1, ff2; std::vector<float> ln1g, ln1b, ln2g, ln2b; };
     struct ChrLayer { Lin in_proj, out, l1, l2; std::vector<float> n1g, n1b, n2g, n2b; };
     Lin lin(const std::string& name) const;

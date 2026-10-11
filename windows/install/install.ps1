@@ -15,7 +15,7 @@ $stamp = Get-Date -Format yyyyMMddHHmmss
 Get-Process AquaTypeEngine -ErrorAction SilentlyContinue | Stop-Process -Force
 New-Item -ItemType Directory -Force $Target, "$Target\x86" | Out-Null
 # Loaded files cannot be overwritten, but they can be renamed; old renamed copies go once nothing holds them.
-foreach ($f in "$Target\AquaTypeTSF.dll", "$Target\x86\AquaTypeTSF.dll", "$Target\AquaTypeEngine.exe", "$Target\aquadecoder.dll") {
+foreach ($f in "$Target\AquaTypeTSF.dll", "$Target\x86\AquaTypeTSF.dll", "$Target\AquaTypeEngine.exe", "$Target\aquadecoder.dll", "$Target\aquadecoder_avx2.dll", "$Target\aquadecoder_sse.dll") {
     if (Test-Path $f) { try { Remove-Item $f -Force } catch { Rename-Item $f ((Split-Path $f -Leaf) + ".old-$stamp") } }
 }
 Get-ChildItem $Target -Recurse -Filter '*.old-*' -ErrorAction SilentlyContinue | ForEach-Object { try { Remove-Item $_.FullName -Force } catch {} }

@@ -42,6 +42,7 @@ V2Model::Lin V2Model::lin(const std::string& name) const {
 }
 void V2Model::apply(const Lin& L, const float* x, int n, float* y, bool acc) const {
     if (L.quant) { if (acc) throw std::logic_error("apply: accumulate on a quantised weight"); gemm_q(x, n, L.q, y, L.b.data()); }
+    else if (L.i8) gemm_i8(x, n, L.w8, y, L.b.data(), acc);
     else gemm_packed(x, n, L.pk, y, L.b.data(), acc);
 }
 
@@ -79,7 +80,10 @@ V2Model::V2Model(const std::string& dir) {
     for (int i = 0; i < cfg_.chr_layers; i++) { std::string p = "chr.layers." + std::to_string(i) + "."; ChrLayer L;
         L.in_proj = lin(p + "in_proj"); L.out = lin(p + "out"); L.l1 = lin(p + "l1"); L.l2 = lin(p + "l2");
         L.n1g = F(p + "norm1.weight"); L.n1b = F(p + "norm1.bias"); L.n2g = F(p + "norm2.weight"); L.n2b = F(p + "norm2.bias");
-        for (Lin* l : {&L.in_proj, &L.out, &L.l1, &L.l2}) std::vector<float>().swap(l->w);    // packed copies only
+        // AQ_CHR_I8 (default on; 0 = fp32): the character model's weights as int8, a quarter of the packed fp32's memory
+        static const bool chr_i8 = [] { const char* e = std::getenv("AQ_CHR_I8"); return !(e && std::string(e) == "0"); }();
+        for (Lin* l : {&L.in_proj, &L.out, &L.l1, &L.l2}) if (chr_i8 && !l->quant && l->in % 64 == 0) { l->w8 = quant_weight_i8(l->w.data(), l->out, l->in); l->i8 = true; l->pk = Packed(); }
+        for (Lin* l : {&L.in_proj, &L.out, &L.l1, &L.l2}) std::vector<float>().swap(l->w);    // packed (or int8) copies only
         chr_.push_back(std::move(L)); }
     for (SylLayer& L : syl_) for (Lin* l : {&L.q, &L.k, &L.v, &L.o, &L.ff1, &L.ff2}) std::vector<float>().swap(l->w);
     std::vector<float>().swap(mlm_dense_.w);
