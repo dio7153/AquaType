@@ -2,7 +2,7 @@
 a request returns decoder candidates (memory pinned first after a commit; the model's rows; char_to_keys chars; deduped, all
 Chinese), a commit is acknowledged with the memory count, a bad line does not kill the process, and without a decoder the engine
 still answers from the traditional path.  Skipped when the engine binary is not built."""
-import base64, hashlib, json, os, select, subprocess, sys, time
+import base64, hashlib, json, os, queue, select, subprocess, sys, threading, time
 from pathlib import Path
 import pytest
 REPO = Path(__file__).resolve().parents[2]; sys.path.insert(0, str(REPO))
@@ -27,14 +27,26 @@ def commit(raw, text, gen, eid, at=None):
             "selected_text": text, "timestamp_unix_seconds": int(time.time() if at is None else at), "count_delta": 1}
 
 class EngineProc:
-    def __init__(self, args): self.p = subprocess.Popen([str(BIN)] + args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+    def __init__(self, args):
+        self.p = subprocess.Popen([str(BIN)] + args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1, encoding="utf-8")
+        # select() takes only sockets on Windows: there threads read the pipes, and a reply is waited for on a queue
+        self.lines = None
+        if os.name == "nt":
+            self.lines = queue.Queue(); threading.Thread(target=lambda: [self.lines.put(l) for l in self.p.stdout], daemon=True).start()
+            self.err = []; threading.Thread(target=lambda: self.err.extend(self.p.stderr), daemon=True).start()
     def send(self, msg):
         self.p.stdin.write(json.dumps(msg, ensure_ascii=False) + "\n"); self.p.stdin.flush()
+        if self.lines is not None:
+            try: return json.loads(self.lines.get(timeout=60))
+            except queue.Empty: self.p.kill(); raise TimeoutError(f"no answer within 60 s to {msg.get('schema')}")
         if not select.select([self.p.stdout], [], [], 60)[0]:                       # an engine that hangs fails the test
             self.p.kill(); raise TimeoutError(f"no answer within 60 s to {msg.get('schema')}")
         return json.loads(self.p.stdout.readline())
     def raw(self, line): self.p.stdin.write(line + "\n"); self.p.stdin.flush()
-    def close(self): self.p.stdin.close(); self.p.wait(timeout=30); return self.p.stderr.read()
+    def close(self):
+        self.p.stdin.close(); self.p.wait(timeout=30)
+        if self.lines is not None: time.sleep(0.1); return "".join(self.err)
+        return self.p.stderr.read()
 
 def test_engine_jsonl_contract(tmp_path):
     out = DECODER; state = tmp_path / "state"; state.mkdir(); raw = "5j4u4"                                     # 注意
@@ -54,7 +66,7 @@ def test_engine_jsonl_contract(tmp_path):
     assert "decoder unavailable" in d.close()
 
 def test_engine_char_coverage():
-    r = subprocess.run([str(BIN), "--check-char-coverage", str(REPO / "data/char_to_keys.json")], capture_output=True, text=True, timeout=300)
+    r = subprocess.run([str(BIN), "--check-char-coverage", str(REPO / "data/char_to_keys.json")], capture_output=True, text=True, encoding="utf-8", timeout=300)
     assert r.returncode == 0 and json.loads(r.stdout.strip().splitlines()[-1])["missing"] == 0
 
 
@@ -128,7 +140,8 @@ def test_memory_takes_back_a_commit_corrected_at_once(tmp_path):
     rows = {r[0]: float(r[4]) for r in (l.split("\t") for l in (state / "personal_memory.v2.tsv").read_text(encoding="utf-8").splitlines())}
     assert rows == {"注意": 0.0, "助益": 1.0}, rows          # taken back to nothing, kept for the next time it is chosen
     assert offered == ["助益"], offered
-    assert (state.stat().st_mode & 0o777) == 0o700 and ((state / "personal_memory.v2.tsv").stat().st_mode & 0o777) == 0o600
+    if os.name == "posix":                                                          # Windows: the profile folder's ACL keeps it private
+        assert (state.stat().st_mode & 0o777) == 0o700 and ((state / "personal_memory.v2.tsv").stat().st_mode & 0o777) == 0o600
 
 
 def test_memory_rewrite_gives_way_to_a_later_choice_of_the_models_characters(tmp_path):
@@ -214,6 +227,7 @@ def test_memory_two_engines_never_overwrite_each_other(tmp_path):
     assert texts == {"注意", "今天", "好"}, texts
 
 
+@pytest.mark.skipif(os.name == "nt", reason="a looping symlink needs the symlink privilege on Windows")
 def test_memory_not_replaced_when_it_cannot_be_looked_at(tmp_path):
     """A memory that cannot be looked at for a moment (a network home reconnecting; here a link that loops, which fails
     with ELOOP) is not taken for an empty one: the commit is not written over it."""

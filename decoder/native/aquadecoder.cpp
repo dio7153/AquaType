@@ -6,7 +6,9 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#ifndef AQ_CPU
 #include "mlx/backend/metal/metal.h"
+#endif
 static std::string g_err;
 // The C API AquaTypeEngine calls.  An export written by decoder/v2/export_v2.py carries "format": "aquatype-v2/1" in
 // its model.json; anything else is refused.
@@ -20,7 +22,12 @@ static bool is_v2_export(const std::string& dir) {
 static char* dup_js(const std::string& js) { char* out = (char*)std::malloc(js.size() + 1); std::memcpy(out, js.c_str(), js.size() + 1); return out; }
 extern "C" {
 aq_decoder* aq_open(const char* model_dir, const char* metallib_path) {
-    try { if (metallib_path && *metallib_path) mlx::core::metal::set_metallib_path(metallib_path);
+    try {
+#ifndef AQ_CPU
+        if (metallib_path && *metallib_path) mlx::core::metal::set_metallib_path(metallib_path);
+#else
+        (void)metallib_path;                                                             // no Metal library on the CPU backend
+#endif
         const std::string dir = model_dir ? model_dir : "";
         if (!is_v2_export(dir)) { g_err = "not a v2 export: " + dir; return nullptr; }
         return new aq_decoder{new aq::V2Session(dir)}; }

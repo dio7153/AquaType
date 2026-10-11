@@ -8,12 +8,27 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <cstdlib>
+#if defined(__APPLE__)
 #include <malloc/malloc.h>
+#elif defined(_WIN32)
+#include <malloc.h>
+#endif
 
 namespace aq {
-static void host_release_free_pages() { malloc_zone_pressure_relief(nullptr, 0); }   // hand freed host blocks back to the kernel: they otherwise stay in the footprint
+// hand freed host blocks back to the kernel: they otherwise stay in the footprint
+#if defined(__APPLE__)
+static void host_release_free_pages() { malloc_zone_pressure_relief(nullptr, 0); }
+#elif defined(_WIN32)
+static void host_release_free_pages() { _heapmin(); }
+#else
+static void host_release_free_pages() {}
+#endif
 static const bool V2TIME = std::getenv("AQ_V2_TIME") != nullptr;   // one line of stage timings per keystroke, to stderr
+#ifdef AQ_CPU
+using namespace cpu;
+#else
 using namespace mlx::core;
+#endif
 using clk = std::chrono::steady_clock;
 static double ms_since(clk::time_point t) { return std::chrono::duration<double, std::milli>(clk::now() - t).count(); }
 
@@ -48,6 +63,21 @@ V2Session::V2Session(const std::string& dir) {
     }
     NeighborMatrix nbm; nbm.K = K; nbm.m.assign(nb.data<uint8_t>(), nb.data<uint8_t>() + (size_t)K * K);
     ChannelCosts cc; cc.K = K; cc.sub = json_num_list(tj, "sub_cost"); cc.ins = json_num_list(tj, "ins_cost"); cc.del = json_number(tj, "c_del", 1.386); cc.tr = json_number(tj, "c_tr", 1.897);
+#ifdef AQ_CPU
+    // Spellings that follow how a word is said rather than a slip of the finger: Taiwanese Mandarin often merges
+    // ㄣ/ㄥ, ㄢ/ㄤ and the retroflex/dental pairs ㄓㄔㄕ/ㄗㄘㄙ, so 應該 is typed ㄧㄣ ㄍㄞ.  The keys are not neighbours on
+    // the keyboard, so the channel never offered the other reading; each pair becomes a substitution of its own, cheaper
+    // than a typical neighbour slip (median 2.5).  AQ_FUZZY: pairs of keys ("p/ 0; 5y th gn" by default), "0" for none.
+    {
+        std::string pairs = "p/ 0; 5y th gn"; if (const char* e = std::getenv("AQ_FUZZY")) pairs = e;
+        double cost = 0.5; if (const char* e = std::getenv("AQ_FUZZY_COST")) cost = std::atof(e);
+        auto id = [&](char c) { auto it = kid_.find(std::string(1, c)); return it == kid_.end() ? -1 : it->second; };
+        for (size_t i = 0; pairs != "0" && i + 1 < pairs.size(); i += 3) {
+            const int a = id(pairs[i]), b = id(pairs[i + 1]); if (a < 0 || b < 0 || a >= K || b >= K) continue;
+            for (auto [x, y] : {std::pair<int, int>{a, b}, {b, a}}) { nbm.m[(size_t)x * K + y] = 1; if ((size_t)x * K + y < cc.sub.size()) cc.sub[(size_t)x * K + y] = std::min(cc.sub[(size_t)x * K + y], cost); }
+        }
+    }
+#endif
     max_seg_len_ = (int)json_number(tj, "max_seg_len", 6);
     if (max_seg_len_ < 1 || max_seg_len_ > MAX_LEN) throw std::runtime_error("tables.json: max_seg_len is outside 1.." + std::to_string(MAX_LEN)); fit_scale_ = json_number(tj, "fit_scale", 100.0); tail_rule_ = json_bool(tj, "tail_prefix_rule", true);
     en_ = std::make_unique<Enumerator>(std::vector<int32_t>(syl_ids.data<int32_t>(), syl_ids.data<int32_t>() + (size_t)NS * ML), std::vector<int32_t>(syl_len.data<int32_t>(), syl_len.data<int32_t>() + NS), ML, nbm, cc, fit_scale_, (int)json_number(tj, "max_edits", 3), max_seg_len_, (int)json_number(tj, "max_edits_long", 3), (int)json_number(tj, "long_seg_min", 5));
@@ -61,6 +91,15 @@ V2Session::V2Session(const std::string& dir) {
     // reading prior is off.  These and the margin override what the export's model.json carries.
     if (model_->has_char_head()) { b_.read_prior = 0.f; b_.g_weight = 1.f - char_head_w_; }
     b_.margin = margin_;
+#ifdef AQ_CPU
+    // The beam widths were chosen against the GPU's cost per row; on the CPU every row is a full forward pass, so the
+    // widths can be narrowed for latency (AQ_BEAM_U: rows expanded per position, AQ_FINAL_U: the last position's pool).
+    // Defaults 96 / 256: on 117 everyday sentences typed with 0, 10 and 20% simulated errors they rank exactly as the
+    // shipped widths (160 / 1024) do, at roughly 60% of the per-key time (tools/aquatype-eval in the porting notes).
+    b_.U = std::min(b_.U, 96); final_u_ = 256;
+    if (const char* e = std::getenv("AQ_BEAM_U")) if (std::atoi(e) > 0) b_.U = std::atoi(e);
+    if (const char* e = std::getenv("AQ_FINAL_U")) if (std::atoi(e) > 0) final_u_ = std::atoi(e);
+#endif
     clear_cache(); host_release_free_pages();
 }
 // A commit ends the sentence, so everything the decode built is dead here.  clear() would not give it back - an
