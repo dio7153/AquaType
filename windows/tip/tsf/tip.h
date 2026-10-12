@@ -4,6 +4,7 @@
 #pragma once
 #include <memory>
 #include "globals.h"
+#include <ctffunc.h>            // ITfFnConfigure
 #include "candwin.h"
 #include "composer.h"
 #include "engine_link.h"
@@ -12,7 +13,7 @@
 namespace aqtsf {
 
 class TextService : public ITfTextInputProcessorEx, public ITfThreadMgrEventSink, public ITfKeyEventSink, public ITfCompositionSink,
-                    public ITfThreadFocusSink, public ITfDisplayAttributeProvider, public ITfCompartmentEventSink {
+                    public ITfThreadFocusSink, public ITfDisplayAttributeProvider, public ITfCompartmentEventSink, public ITfFnConfigure {
 public:
     TextService();
     // IUnknown
@@ -35,7 +36,7 @@ public:
     STDMETHODIMP OnKeyDown(ITfContext* ctx, WPARAM w, LPARAM l, BOOL* eaten) override;
     STDMETHODIMP OnTestKeyUp(ITfContext* ctx, WPARAM w, LPARAM l, BOOL* eaten) override;
     STDMETHODIMP OnKeyUp(ITfContext* ctx, WPARAM w, LPARAM l, BOOL* eaten) override;
-    STDMETHODIMP OnPreservedKey(ITfContext*, REFGUID, BOOL* eaten) override { *eaten = FALSE; return S_OK; }
+    STDMETHODIMP OnPreservedKey(ITfContext* ctx, REFGUID g, BOOL* eaten) override;
     // ITfCompositionSink
     STDMETHODIMP OnCompositionTerminated(TfEditCookie ec, ITfComposition* comp) override;
     // ITfThreadFocusSink
@@ -47,9 +48,12 @@ public:
 
     // ITfCompartmentEventSink: the input mode changed from outside (the taskbar's 中/英 indicator)
     STDMETHODIMP OnChange(REFGUID g) override;
+    // ITfFnConfigure: Windows Settings' 「選項」 for this keyboard
+    STDMETHODIMP GetDisplayName(BSTR* name) override;
+    STDMETHODIMP Show(HWND parent, LANGID, REFGUID) override;
 
     // used by the edit sessions
-    void set_preedit(TfEditCookie ec, ITfContext* ctx, const std::wstring& text);
+    void set_preedit(TfEditCookie ec, ITfContext* ctx, const std::wstring& text, int caret = -1);
     void commit(TfEditCookie ec, ITfContext* ctx, const std::wstring& text);
     std::string context_before_caret(TfEditCookie ec, ITfContext* ctx);
     bool secure_input(TfEditCookie ec, ITfContext* ctx);
@@ -66,6 +70,9 @@ private:
     void on_select(int index); void on_page(bool down);
     static LRESULT CALLBACK msg_proc(HWND, UINT, WPARAM, LPARAM);
     void sync_input_mode();                                          // the composer's mode -> the system's indicator
+    void reload_settings();                                          // HKCU\Software\AquaType -> the composer and the panel
+    void toggle_mode();                                              // the indicator's click, as a Shift tap
+    void show_menu(POINT at);                                        // the indicator's right click
     ITfCompartment* mode_compartment();
     DWORD mode_sink_ = TF_INVALID_COOKIE; bool setting_mode_ = false;
     InputModeButton* mode_button_ = nullptr;
@@ -80,7 +87,12 @@ private:
     struct HostImpl; std::unique_ptr<HostImpl> host_;
     std::unique_ptr<aqtip::Composer> composer_;
     CandidateWindow panel_; RECT anchor_{}; bool have_anchor_ = false;
-    ULONGLONG shift_down_at_ = 0; bool shift_clean_ = false;
+    ULONGLONG shift_down_at_ = 0; bool shift_held_ = false; bool other_key_with_shift_ = false;
+    void shift_down(); bool shift_up(ITfContext* ctx);
+    UINT settings_msg_ = 0;
 };
+
+// AquaTypeSettings.exe, next to the 64-bit text service
+void open_settings_app();
 
 }  // namespace aqtsf

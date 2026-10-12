@@ -12,10 +12,10 @@ $src = $PSScriptRoot
 $clsid = '{87FA8DDA-2BA4-476C-8510-93DCD553AD2B}'; $prof = '{3A6B588B-D85E-4EB1-A28D-38F3F7BEBE92}'
 $stamp = Get-Date -Format yyyyMMddHHmmss
 
-Get-Process AquaTypeEngine -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process AquaTypeEngine -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$Target\*" } | Stop-Process -Force   # only the installed one
 New-Item -ItemType Directory -Force $Target, "$Target\x86" | Out-Null
 # Loaded files cannot be overwritten, but they can be renamed; old renamed copies go once nothing holds them.
-foreach ($f in "$Target\AquaTypeTSF.dll", "$Target\x86\AquaTypeTSF.dll", "$Target\AquaTypeEngine.exe", "$Target\aquadecoder.dll") {
+foreach ($f in "$Target\AquaTypeTSF.dll", "$Target\x86\AquaTypeTSF.dll", "$Target\AquaTypeEngine.exe", "$Target\aquadecoder.dll", "$Target\AquaTypeSettings.exe") {
     if (Test-Path $f) { try { Remove-Item $f -Force } catch { Rename-Item $f ((Split-Path $f -Leaf) + ".old-$stamp") } }
 }
 Get-ChildItem $Target -Recurse -Filter '*.old-*' -ErrorAction SilentlyContinue | ForEach-Object { try { Remove-Item $_.FullName -Force } catch {} }
@@ -36,6 +36,9 @@ $engine = "$Target\AquaTypeEngine.exe"; $data = "$Target\data"; $log = "$env:LOC
 New-Item -ItemType Directory -Force (Split-Path $log) | Out-Null
 $cmd = "`"$engine`" --command serve-pipe --decoder-dir `"$data\decoder`" --char-to-keys `"$data\char_to_keys.json`" --fallback-aqds `"$data\dict_store\dictionary_fallback.v1.aqds`" --fallback-manifest `"$data\dict_store\dictionary_fallback.v1.aqds.manifest.json`" --log `"$log`""
 Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'AquaTypeEngine' -Value $cmd
+# the settings, in the Start menu too (also: right click on the taskbar's 中/英, or Windows Settings' 「選項」)
+$lnk = (New-Object -ComObject WScript.Shell).CreateShortcut("$env:ProgramData\Microsoft\Windows\Start Menu\Programs\AquaType 設定.lnk")
+$lnk.TargetPath = "$Target\AquaTypeSettings.exe"; $lnk.WorkingDirectory = $Target; $lnk.Save()
 # Not started from here: this script runs elevated, and the engine must not.  The first app that switches to AquaType
 # starts it (at normal integrity), and so does every logon from now on.
 "installed to $Target; switch input methods with Win+Space and choose AquaType 注音"

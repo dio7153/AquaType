@@ -27,6 +27,7 @@
 #include "aquadecoder.h"
 #include "aqds.h"
 #include "memory.h"
+#include "settings.h"
 #include "util.h"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -450,6 +451,13 @@ static int run(int argc, char** argv) {
     if (a.flags.count("--version")) { std::printf("AquaTypeEngine %s\n", aq_version()); return 0; }
     if (const char* p = a.get("--check-char-coverage")) { CharKeyIndex idx(widen(p)); auto gaps = idx.coverage_gaps();
         std::printf("{\"chars\":%zu,\"missing\":%zu,\"ok\":%s}\n", idx.count, gaps.size(), gaps.empty() ? "true" : "false"); return gaps.empty() ? 0 : 1; }
+    // The pipe engine is the installed one: the person's settings (AquaTypeSettings.exe) choose the pronunciation pairs and
+    // the dictionary weight, unless the environment already does (evaluation runs).
+    if (a.get("--command") && std::string(a.get("--command")) == "serve-pipe") {
+        const aqtip::Settings s = aqtip::Settings::load();
+        if (!std::getenv("AQ_FUZZY")) _putenv_s("AQ_FUZZY", s.fuzzy_pairs().c_str());
+        if (!std::getenv("AQ_LEXICON_WEIGHT")) _putenv_s("AQ_LEXICON_WEIGHT", s.lexicon_priority ? "4" : "0");
+    }
     Engine engine = make_engine(a);
     if (a.flags.count("--selftest")) { contract::Request r; r.client_id = "selftest"; r.generation = 1; r.raw_keys = a.get("--raw") ? a.get("--raw") : "ji3"; r.raw_identity = contract::identity(r.raw_keys);
         r.context_identity = contract::context_identity(""); r.max_candidates = 9; emit(engine.respond(r)); return 0; }

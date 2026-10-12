@@ -30,19 +30,23 @@ STDMETHODIMP_(ULONG) InputModeButton::Release() { LONG r = InterlockedDecrement(
 STDMETHODIMP InputModeButton::GetInfo(TF_LANGBARITEMINFO* info) {
     info->clsidService = CLSID_AquaType; info->guidItem = kLbiInputMode;
     info->dwStyle = TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAY; info->ulSort = 0;
-    wcscpy_s(info->szDescription, L"AquaType 中／英");
+    wcscpy_s(info->szDescription, L"輸入模式");
     return S_OK;
 }
 STDMETHODIMP InputModeButton::GetTooltipString(BSTR* tip) {
     const bool ascii = is_ascii && is_ascii();
-    *tip = SysAllocString(ascii ? L"英文模式（單按 Shift 切回中文）" : L"中文模式（單按 Shift 切到英文）");
+    *tip = SysAllocString(ascii ? L"英文模式（Shift 切換）" : L"中文模式（Shift 切換）");
     return *tip ? S_OK : E_OUTOFMEMORY;
 }
-STDMETHODIMP InputModeButton::OnClick(TfLBIClick click, POINT, const RECT*) { if (click == TF_LBI_CLK_LEFT && on_click) on_click(); return S_OK; }
+STDMETHODIMP InputModeButton::OnClick(TfLBIClick click, POINT at, const RECT*) {
+    if (click == TF_LBI_CLK_LEFT && on_click) on_click();
+    else if (click == TF_LBI_CLK_RIGHT && on_menu) on_menu(at);
+    return S_OK;
+}
 STDMETHODIMP InputModeButton::GetIcon(HICON* icon) {
     const bool ascii = is_ascii && is_ascii(), dark = taskbar_dark();
     const int id = ascii ? (dark ? IDI_EN_DARK : IDI_EN_LIGHT) : (dark ? IDI_ZH_DARK : IDI_ZH_LIGHT);
-    const int size = GetSystemMetrics(SM_CXSMICON);
+    const int size = GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForSystem());   // 16/20/24/32 at 100/125/150/200%
     *icon = (HICON)LoadImageW(g_module, MAKEINTRESOURCEW(id), IMAGE_ICON, size, size, LR_DEFAULTCOLOR);   // the caller destroys it
     return *icon ? S_OK : E_FAIL;
 }

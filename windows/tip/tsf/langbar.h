@@ -10,6 +10,7 @@ class InputModeButton : public ITfLangBarItemButton, public ITfSource {
 public:
     std::function<bool()> is_ascii;              // the current mode
     std::function<void()> on_click;              // switch it
+    std::function<void(POINT)> on_menu;          // right click: the menu (switch, 設定…), at the click's screen point
     InputModeButton();
     // IUnknown
     STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override;

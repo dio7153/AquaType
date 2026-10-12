@@ -37,6 +37,9 @@ bool is_han(char32_t v) {
     return (v >= 0x3400 && v <= 0x4DBF) || (v >= 0x4E00 && v <= 0x9FFF) || (v >= 0xF900 && v <= 0xFAFF) || (v >= 0x20000 && v <= 0x2A6DF)
         || (v >= 0x2A700 && v <= 0x2EBEF) || (v >= 0x2F800 && v <= 0x2FA1F) || (v >= 0x30000 && v <= 0x323AF);
 }
+std::wstring from_cp(char32_t v) {
+    std::wstring w; if (v >= 0x10000) { v -= 0x10000; w += (wchar_t)(0xD800 + (v >> 10)); w += (wchar_t)(0xDC00 + (v & 0x3FF)); } else w += (wchar_t)v; return w;
+}
 bool all_han(const std::wstring& t) { auto c = code_points(t); return !c.empty() && std::all_of(c.begin(), c.end(), is_han); }
 bool any_han(const std::wstring& t) { auto c = code_points(t); return std::any_of(c.begin(), c.end(), is_han); }
 std::string base64(const std::string& b) {
@@ -102,8 +105,13 @@ std::wstring Composer::echo(const std::string& raw) {
     while (!o.empty() && o.back() == L' ') o.pop_back();
     return o;
 }
+std::wstring Composer::bopomofo_text(const std::string& raw) {
+    std::wstring o = echo(raw);
+    o.erase(std::remove_if(o.begin(), o.end(), [](wchar_t c) { return c == L' ' || c == L'ˉ'; }), o.end());
+    return o;
+}
 
-Composer::Composer(Host& host, EngineLink& engine) : host_(host), engine_(engine), client_id_(new_uuid()) {}
+Composer::Composer(Host& host, EngineLink& engine) : host_(host), engine_(engine), client_id_(new_uuid()) { pick_client_id_ = client_id_ + "-pick"; }
 
 void Composer::begin_seq() { seq_++; }
 
@@ -113,8 +121,8 @@ bool Composer::wants(const Key& k) const {
     if (k.ctrl || k.alt) return comp;                                     // commit (or edit) the composition before the chord reaches the app
     if (ascii_mode()) return false;
     if (comp) return true;                                                // while composing every key is ours to route
-    if (k.caps) return false;
-    if (!c || c == ' ') return false;                                     // a space with nothing composed is a space
+    if (k.caps && settings_.caps_english) return false;
+    if (!c || c == ' ') return false;                                    // a space with nothing composed is a space
     if (k.shift && k.vk >= 'A' && k.vk <= 'Z') return false;
     if (k.shift) return true;                                             // shifted punctuation
     return is_raw_key(c) || c == '`' || c == '=' || c == '[' || c == ']' || c == '\\' || c == '\'';
@@ -130,8 +138,11 @@ Result Composer::key(const Key& k) {
         commit_whole(/*remember=*/false); return Result::Pass;                 // a shortcut ends the composition; what it committed is not learned
     }
     if (ascii_mode()) return Result::Pass;
-    if (k.caps && c && c != ' ') { if (comp) commit_whole(); return Result::Pass; }
+    // CapsLock is ignored unless the person asked for Microsoft Bopomofo's way (CapsLock on = English): left on by
+    // accident it silently turned every key into English.
+    if (k.caps && settings_.caps_english && c && c != ' ') { if (comp) commit_whole(); return Result::Pass; }
 
+    if (comp && sentence_mode()) { bool handled = false; const Result r = sentence_key(k, c, &handled); if (handled) return r; }
     if (comp) switch (k.vk) {
         case VK_BACK: backspace(); return Result::Eaten;
         case VK_DELETE: return Result::Eaten;
@@ -147,8 +158,8 @@ Result Composer::key(const Key& k) {
         case VK_END: if (panel_raw_ == raw_) move((int)cands_.size() - 1); return Result::Eaten;
         case VK_RETURN:
             if (k.shift) { commit_whole(); return Result::Pass; }
-            if (waiting_for_current()) wait_for_answer(reply_timeout_ms(raw_.size()));
-            if (!(panel_raw_ == raw_ && !cands_.empty()) || !commit_highlighted()) commit_whole();
+            if (waiting_for_current()) wait_for_answer(commit_wait_ms(raw_.size()));
+            if (sentence_mode() || !(panel_raw_ == raw_ && !cands_.empty()) || !commit_highlighted()) commit_whole();
             return Result::Eaten;
         default: break;
     }
@@ -157,9 +168,15 @@ Result Composer::key(const Key& k) {
     }
     if (c && !k.shift && is_raw_key(c)) {
         if (c == ' ' && !comp) return Result::Pass;
-        if (c == ' ' && is_tone(raw_.back())) return Result::Eaten;        // a space after a tone spells nothing
+        // An initial that is no syllable on its own (ㄅ…ㄒ), then Space: the symbol itself, for writing bopomofo
+        if (c == ' ' && settings_.initial_symbol && raw_.size() == 1 && std::strchr("1qaz2wsxedcrfv", raw_[0])) { commit_bopomofo(); return Result::Eaten; }
+        if (c == ' ' && is_tone(raw_.back())) {                           // the syllable is complete: Space confirms, as Enter does (the next Space is a space)
+            if (waiting_for_current()) wait_for_answer(commit_wait_ms(raw_.size()));
+            if (sentence_mode() || !(panel_raw_ == raw_ && !cands_.empty()) || !commit_highlighted()) commit_whole();
+            return Result::Eaten;
+        }
         if (raw_.size() >= kKeyCap && !is_tone(c)) { host_.beep(); return Result::Eaten; }
-        begin_seq(); set_raw(raw_ + c); return Result::Eaten;
+        begin_seq(); caret_ = -1; set_raw(raw_ + c); return Result::Eaten;   // typed keys go at the end
     }
     if (c) return punctuation(k, c);
     if (comp) { commit_whole(); return Result::Pass; }                    // F-keys, the numeric keypad, ...: the composition goes first
@@ -188,18 +205,20 @@ void Composer::backspace() {
         while (!r.empty() && !is_tone(r.back())) r.pop_back();
     } else if (!r.empty()) r.pop_back();
     if (r.empty() || echo(r).empty()) { clear_composition(); return; }
+    locks_.erase(locks_.lower_bound((int)segments(r).size()), locks_.end());
     begin_seq(); set_raw(r, /*preserve_panel=*/true);
 }
 
 void Composer::clear_composition() {
     raw_.clear(); panel_raw_.clear(); cands_.clear(); highlighted_ = 0; pieces_.clear(); queued_raw_.reset(); begin_seq();
+    caret_ = -1; locks_.clear(); close_pick(); panel_version_++;
     host_.set_preedit(L"");
 }
 
 void Composer::set_raw(const std::string& raw, bool preserve_panel) {
     raw_ = raw;
     if (raw_.empty()) { clear_composition(); return; }
-    host_.set_preedit(echo(raw_));
+    refresh_preedit();
     // The old panel stays up until the new answer arrives: after a Backspace as an interim answer for more keys; for a
     // longer input it is simply the last answer.  Neither can be committed (panel_raw_ != raw_).
     (void)preserve_panel;
@@ -233,6 +252,7 @@ void Composer::handle_line(const std::string& line) {
     json j; try { j = json::parse(line); } catch (...) { return; }
     if (!j.is_object() || !j.contains("schema") || !j["schema"].is_string()) return;
     const std::string schema = j["schema"];
+    if (j.value("client_id", std::string()) == pick_client_id_) { handle_pick_line(line); return; }
     if (j.value("client_id", std::string()) != client_id_) return;
     if (schema == "aquatype-ui-failure/v1") {
         if (!j.contains("event_id")) { in_flight_ = false; engine_unavailable_ = true; }
@@ -263,7 +283,11 @@ void Composer::handle_line(const std::string& line) {
             c.memory = std::find(c.provenance.begin(), c.provenance.end(), "G_DECODER_MEMORY") != c.provenance.end();
             cs.push_back(std::move(c)); if (cs.size() >= 512) break;
         }
-        if (!cs.empty()) { cands_ = std::move(cs); panel_raw_ = rraw; highlighted_ = 0; if (current) published_seq_ = seq_; }
+        if (settings_.bopomofo_candidate) {                               // last, its own group: the bopomofo as typed
+            Candidate b; b.wtext = bopomofo_text(rraw); b.text = narrow(b.wtext); b.provenance = {"BOPOMOFO"}; b.group = 3;
+            if (!b.wtext.empty()) cs.push_back(std::move(b));
+        }
+        if (!cs.empty()) { cands_ = std::move(cs); panel_raw_ = rraw; highlighted_ = 0; if (current) published_seq_ = seq_; panel_version_++; }
     }
     // the next request: the newest keys typed while this one was out, or the current keys again when a commit renumbered them
     if (!in_flight_ && !raw_.empty()) {
@@ -273,9 +297,9 @@ void Composer::handle_line(const std::string& line) {
 }
 
 bool Composer::pump() {
-    const size_t before = cands_.size(); const std::string praw = panel_raw_; const uint64_t pub = published_seq_; std::string line; bool any = false;
+    const size_t before = cands_.size(); const std::string praw = panel_raw_; const uint64_t pub = published_seq_, pv = panel_version_; std::string line; bool any = false;
     while (engine_.next_line(&line, 0)) { handle_line(line); any = true; }
-    return any && (cands_.size() != before || panel_raw_ != praw || published_seq_ != pub);
+    return any && (cands_.size() != before || panel_raw_ != praw || published_seq_ != pub || panel_version_ != pv);
 }
 
 bool Composer::waiting_for_current() const { return composing() && !(panel_raw_ == raw_ && published_seq_ == seq_) && !engine_unavailable_ && waited_seq_ != seq_; }
@@ -308,15 +332,22 @@ bool Composer::commit_highlighted() {
 
 void Composer::commit_whole(bool remember) {
     if (!composing()) return;
-    if (waiting_for_current()) wait_for_answer(reply_timeout_ms(raw_.size()));
+    if (waiting_for_current()) wait_for_answer(commit_wait_ms(raw_.size()));
+    if (sentence_mode()) {                                                // what is shown, picks included; bopomofo in it is not learned
+        const std::wstring t = sentence(); commit_text(t, raw_, remember && all_han(t)); return;
+    }
     if (panel_raw_ == raw_ && !cands_.empty()) {
         int pick = -1;
         if (highlighted_ > 0 && highlighted_ < (int)cands_.size() && !cands_[highlighted_].consumed) pick = highlighted_;
         else for (int i = 0; i < (int)cands_.size(); i++) if (!cands_[i].consumed) { pick = i; break; }
         if (pick >= 0) { commit_text(cands_[pick].wtext, raw_, remember); return; }
     }
-    // nothing covers the whole input: the bopomofo itself, which is never remembered
-    const std::wstring e = echo(raw_); raw_.clear(); panel_raw_.clear(); cands_.clear(); highlighted_ = 0; pieces_.clear(); begin_seq();
+    commit_bopomofo();                                                    // nothing covers the whole input
+}
+// the bopomofo itself, which is never remembered
+void Composer::commit_bopomofo() {
+    const std::wstring e = bopomofo_text(raw_); raw_.clear(); panel_raw_.clear(); cands_.clear(); highlighted_ = 0; pieces_.clear(); queued_raw_.reset(); begin_seq();
+    caret_ = -1; locks_.clear(); close_pick(); panel_version_++;
     host_.commit(e);
 }
 
@@ -332,6 +363,7 @@ void Composer::commit_text(const std::wstring& text, const std::string& keys, bo
         }
     }
     raw_.clear(); panel_raw_.clear(); cands_.clear(); highlighted_ = 0; pieces_.clear(); queued_raw_.reset(); begin_seq();
+    caret_ = -1; locks_.clear(); close_pick(); panel_version_++;
 }
 
 void Composer::record(const std::string& keys, const std::string& text) {
@@ -342,10 +374,10 @@ void Composer::record(const std::string& keys, const std::string& text) {
 }
 
 // ---------------------------------------------------------------- the panel
-std::vector<std::vector<int>> Composer::pages() const {
+std::vector<std::vector<int>> Composer::pages_of(const std::vector<Candidate>& list) {
     std::vector<std::vector<int>> out; std::vector<int> cur; int lines = 0;
-    for (int i = 0; i < (int)cands_.size(); i++) {
-        const int need = std::max(1, (int)((code_points(cands_[i].wtext).size() + kLineChars - 1) / kLineChars));
+    for (int i = 0; i < (int)list.size(); i++) {
+        const int need = std::max(1, (int)((code_points(list[i].wtext).size() + kLineChars - 1) / kLineChars));
         if (!cur.empty() && lines + need > kPanelLines) { out.push_back(cur); cur.clear(); lines = 0; }
         cur.push_back(i); lines += need;
     }
@@ -353,26 +385,188 @@ std::vector<std::vector<int>> Composer::pages() const {
     return out;
 }
 int Composer::page_of(int index) const { auto ps = pages(); for (int p = 0; p < (int)ps.size(); p++) for (int i : ps[p]) if (i == index) return p; return 0; }
-void Composer::move(int to) { if (cands_.empty()) return; highlighted_ = std::max(0, std::min((int)cands_.size() - 1, to)); }
+void Composer::move(int to) {
+    if (sentence_mode()) { if (!pick_.empty()) { pick_hi_ = std::max(0, std::min((int)pick_.size() - 1, to)); panel_version_++; } return; }
+    if (cands_.empty()) return; highlighted_ = std::max(0, std::min((int)cands_.size() - 1, to)); }
 void Composer::page(bool down) {
+    if (sentence_mode()) {
+        if (!choosing_ || pick_.empty()) return;
+        auto ps = pages(); const int p = page_of(pick_hi_);
+        if (down) { if (p + 1 < (int)ps.size()) pick_hi_ = ps[p + 1][0]; } else pick_hi_ = p > 0 ? ps[p - 1][0] : ps[0][0];
+        panel_version_++; return;
+    }
     if (cands_.empty() || panel_raw_ != raw_) return;
     auto ps = pages(); int p = page_of(highlighted_);
     if (down) { if (p + 1 < (int)ps.size()) highlighted_ = ps[p + 1][0]; }
     else highlighted_ = p > 0 ? ps[p - 1][0] : ps[0][0];
 }
 PanelView Composer::panel() const {
-    PanelView v; v.cands = &cands_; v.highlighted = highlighted_; v.interim = panel_raw_ != raw_;
+    PanelView v;
+    if (sentence_mode()) {
+        if (!choosing_ || pick_.empty()) return v;
+        v.cands = &pick_; v.highlighted = pick_hi_; auto ps = pages(); v.rows = ps[std::min((int)ps.size() - 1, page_of(pick_hi_))]; return v;
+    }
+    v.cands = &cands_; v.highlighted = highlighted_; v.interim = panel_raw_ != raw_;
     if (!cands_.empty()) { auto ps = pages(); v.rows = ps[std::min((int)ps.size() - 1, page_of(highlighted_))]; }
     return v;
 }
-void Composer::select(int index) { if (panel_raw_ != raw_ || index < 0 || index >= (int)cands_.size()) return; highlighted_ = index; commit_highlighted(); }
+void Composer::select(int index) {
+    if (sentence_mode()) { pick(index); return; }
+    if (panel_raw_ != raw_ || index < 0 || index >= (int)cands_.size()) return; highlighted_ = index; commit_highlighted(); }
+
+// ---------------------------------------------------------------- 整句直出
+// The composition shows the sentence the engine ranks first, with the characters picked by hand kept in place; keys the
+// engine has not answered yet show as bopomofo after it.  ← → move the caret over the characters, ↓ opens the
+// candidates for the one at the caret: the characters the other sentences put there, then what the engine offers for
+// that syllable alone (asked separately, with the sentence before it as context), then its bopomofo.  A pick holds its
+// place while more keys are typed; the whole is committed with Enter, as Microsoft Bopomofo does.
+std::vector<std::string> Composer::segments(const std::string& raw) {
+    std::vector<std::string> s; std::string cur;
+    for (char c : raw) { cur += c; if (is_tone(c)) { s.push_back(cur); cur.clear(); } }
+    if (!cur.empty()) s.push_back(cur);
+    return s;
+}
+const Candidate* Composer::best_whole() const {
+    const Candidate* first = nullptr;
+    for (const auto& c : cands_) {
+        if (c.consumed || c.group == 3) continue;
+        if (!first) first = &c;
+        const auto cp = code_points(c.wtext); bool ok = true;
+        for (const auto& [i, t] : locks_) { const auto lc = code_points(t); if (lc.size() == 1 && (i >= (int)cp.size() || cp[i] != lc[0])) { ok = false; break; } }
+        if (ok) return &c;
+    }
+    return first;
+}
+static bool answered_prefix(const std::string& panel_raw, const std::string& raw) { return !panel_raw.empty() && panel_raw.size() <= raw.size() && raw.compare(0, panel_raw.size(), panel_raw) == 0; }
+std::vector<std::wstring> Composer::slots() const {
+    std::vector<std::wstring> out; size_t done = 0;
+    if (answered_prefix(panel_raw_, raw_)) if (const Candidate* b = best_whole()) { for (char32_t v : code_points(b->wtext)) out.push_back(from_cp(v)); done = panel_raw_.size(); }
+    for (const auto& [i, t] : locks_) if (i < (int)out.size()) out[i] = t;
+    for (wchar_t ch : bopomofo_text(raw_.substr(done))) out.push_back(std::wstring(1, ch));
+    return out;
+}
+int Composer::chinese_slots() const {
+    if (!answered_prefix(panel_raw_, raw_)) return 0;
+    const Candidate* b = best_whole(); return b ? (int)code_points(b->wtext).size() : 0;
+}
+std::wstring Composer::sentence() const { std::wstring t; for (auto& s : slots()) t += s; return t; }
+int Composer::target() const { const int n = (int)slots().size(); if (n == 0) return 0; return std::min(caret_ < 0 ? n : caret_, n - 1); }
+bool Composer::target_span(int* offset, int* length) const {
+    if (!composing() || !sentence_mode()) return false;
+    const auto s = slots(); if (s.empty()) return false;
+    const int k = std::min(choosing_ ? pick_k_ : target(), (int)s.size() - 1);
+    int o = 0; for (int i = 0; i < k; i++) o += (int)s[i].size();
+    *offset = o; *length = (int)s[k].size(); return true;
+}
+void Composer::refresh_preedit() {
+    if (!composing()) return;
+    if (!sentence_mode()) { host_.set_preedit(echo(raw_)); return; }
+    const auto s = slots(); std::wstring t; int caret = -1;
+    for (int i = 0; i < (int)s.size(); i++) { if (i == caret_) caret = (int)t.size(); t += s[i]; }
+    host_.set_preedit(t, caret);
+}
+void Composer::open_pick() {
+    const auto s = slots(); if (s.empty()) return;
+    const int k = target(), n = chinese_slots();
+    pick_.clear(); pick_hi_ = 0; pick_k_ = k; choosing_ = true; panel_version_++;
+    std::set<std::wstring> seen;
+    auto add = [&](const std::wstring& t, int group) { if (t.empty() || !seen.insert(t).second) return; Candidate c; c.wtext = t; c.text = narrow(t); c.group = group; c.provenance = {"PICK"}; pick_.push_back(std::move(c)); };
+    add(s[k], 2);
+    if (k < n) for (const auto& c : cands_) { if (c.consumed || c.group == 3) continue; const auto cp = code_points(c.wtext); if ((int)cp.size() == n) add(from_cp(cp[k]), 2); }
+    pick_engine_from_ = (int)pick_.size(); pick_bopomofo_.clear();
+    const auto segs = segments(panel_raw_);
+    if (k < n && (int)segs.size() == n) {                                 // one syllable per character: the syllable can be asked about alone
+        if (settings_.bopomofo_candidate) pick_bopomofo_ = bopomofo_text(segs[k]);
+        std::wstring before = widen(context_); for (int i = 0; i < k; i++) before += s[i];
+        if (before.size() > 256) before.erase(0, before.size() - 256);
+        if (!before.empty() && before[0] >= 0xDC00 && before[0] <= 0xDFFF) before.erase(0, 1);
+        const std::string ctx = narrow(before);
+        json j = {{"schema", "aquatype-ui-fallback-request/v1"}, {"client_id", pick_client_id_}, {"client_generation", ++pick_gen_}, {"raw_keys", segs[k]}, {"raw_identity", base64(segs[k])},
+                  {"committed_context_utf8", ctx}, {"context_identity", sha256_hex(ctx)}, {"max_candidates", kMaxCandidates}};
+        engine_.send(j.dump() + "\n");
+    }
+    if (!pick_bopomofo_.empty()) add(pick_bopomofo_, 3);
+}
+void Composer::handle_pick_line(const std::string& line) {
+    json j; try { j = json::parse(line); } catch (...) { return; }
+    if (!choosing_ || j.value("schema", std::string()) != "aquatype-ui-fallback-response/v1" || j.value("client_generation", (uint64_t)0) != pick_gen_) return;
+    std::vector<Candidate> more;
+    for (auto& r : j.value("candidates", json::array())) {
+        if (r.contains("consumed_keys") && r["consumed_keys"].is_number_integer()) continue;
+        const std::wstring w = widen(r.value("text_utf8", std::string()));
+        if (!all_han(w) || code_points(w).size() != 1) continue;
+        auto same = [&](const Candidate& c) { return c.wtext == w; };
+        if (std::any_of(pick_.begin(), pick_.end(), same) || std::any_of(more.begin(), more.end(), same)) continue;
+        Candidate c; c.wtext = w; c.text = narrow(w); c.group = 2; c.provenance = {"PICK"}; more.push_back(std::move(c));
+        if (more.size() >= 60) break;
+    }
+    if (more.empty()) return;
+    const int at = std::max(0, std::min(pick_engine_from_, (int)pick_.size() - (pick_bopomofo_.empty() ? 0 : 1)));   // before the bopomofo
+    pick_.insert(pick_.begin() + at, more.begin(), more.end()); pick_engine_from_ = at + (int)more.size();
+    panel_version_++;
+}
+void Composer::pick(int index) {
+    if (!choosing_ || index < 0 || index >= (int)pick_.size()) return;
+    const int k = pick_k_; locks_[k] = pick_[index].wtext; close_pick(); panel_version_++;
+    const int n = (int)slots().size(); caret_ = k + 1 >= n ? -1 : k + 1;  // on to the next character, as Microsoft Bopomofo does
+    refresh_preedit();
+}
+void Composer::delete_before_caret() {
+    const int c = caret_, n = chinese_slots(); const auto segs = segments(panel_raw_);
+    if (c <= 0) return;
+    if (c > n || (int)segs.size() != n) { host_.beep(); return; }
+    std::string keep; for (int i = 0; i < n; i++) if (i != c - 1) keep += segs[i];
+    const std::string r = keep + raw_.substr(panel_raw_.size());
+    std::map<int, std::wstring> l; for (auto& [i, t] : locks_) { if (i < c - 1) l[i] = t; else if (i > c - 1) l[i - 1] = t; } locks_ = l;
+    caret_ = c - 1;
+    if (r.empty()) { clear_composition(); return; }
+    // the shown sentence loses that character at once; the new answer replaces it
+    std::vector<Candidate> cs;
+    for (auto cd : cands_) { if (cd.consumed || cd.group == 3) continue; auto cp = code_points(cd.wtext); if ((int)cp.size() != n) continue;
+        cp.erase(cp.begin() + (c - 1)); std::wstring w; for (char32_t v : cp) w += from_cp(v); cd.wtext = w; cd.text = narrow(w); cs.push_back(std::move(cd)); }
+    cands_ = std::move(cs); panel_raw_ = cands_.empty() ? std::string() : keep;
+    begin_seq(); set_raw(r);
+}
+Result Composer::sentence_key(const Key& k, char, bool* handled) {
+    *handled = true;
+    if (choosing_) {
+        switch (k.vk) {
+            case VK_DOWN: move(pick_hi_ + 1); return Result::Eaten;
+            case VK_UP: move(pick_hi_ - 1); return Result::Eaten;
+            case VK_NEXT: page(true); return Result::Eaten;
+            case VK_PRIOR: page(false); return Result::Eaten;
+            case VK_RETURN: case VK_SPACE: pick(pick_hi_); return Result::Eaten;
+            case VK_ESCAPE: case VK_BACK: close_pick(); panel_version_++; return Result::Eaten;
+            case VK_LEFT: case VK_RIGHT: case VK_HOME: case VK_END: close_pick(); panel_version_++; break;   // the list closes, the caret moves
+            default:
+                if (k.vk >= '1' && k.vk <= '9' && !k.shift) {                  // while the list is open the digits pick, as in Microsoft Bopomofo
+                    auto ps = pages(); const int p = page_of(pick_hi_), i = (int)(k.vk - '1');
+                    if (i < (int)ps[p].size()) pick(ps[p][i]);
+                    return Result::Eaten;
+                }
+                close_pick(); panel_version_++; *handled = false; return Result::Pass;   // any other key does what it always does
+        }
+    }
+    const int n = (int)slots().size(), c0 = caret_ < 0 ? n : caret_;
+    switch (k.vk) {
+        case VK_LEFT: caret_ = std::max(0, c0 - 1); refresh_preedit(); return Result::Eaten;
+        case VK_RIGHT: caret_ = c0 + 1 >= n ? -1 : c0 + 1; refresh_preedit(); return Result::Eaten;
+        case VK_HOME: caret_ = 0; refresh_preedit(); return Result::Eaten;
+        case VK_END: caret_ = -1; refresh_preedit(); return Result::Eaten;
+        case VK_DOWN: if (waiting_for_current()) wait_for_answer(commit_wait_ms(raw_.size())); open_pick(); refresh_preedit(); return Result::Eaten;
+        case VK_UP: case VK_TAB: case VK_NEXT: case VK_PRIOR: return Result::Eaten;
+        case VK_BACK: if (c0 < n) { delete_before_caret(); return Result::Eaten; } break;   // at the end: the last syllable, as always
+        default: break;
+    }
+    *handled = false; return Result::Pass;
+}
 
 // ---------------------------------------------------------------- modes and focus
 void Composer::shift_tapped() {
     if (ascii_mode()) { ascii_global_ = false; ascii_session_ = false; return; }
     if (composing()) {
-        if (waiting_for_current()) wait_for_answer(reply_timeout_ms(raw_.size()));
-        const bool whole = panel_raw_ == raw_ && std::any_of(cands_.begin(), cands_.end(), [](const Candidate& c) { return !c.consumed; });
+        if (waiting_for_current()) wait_for_answer(commit_wait_ms(raw_.size()));
+        const bool whole = panel_raw_ == raw_ && std::any_of(cands_.begin(), cands_.end(), [](const Candidate& c) { return !c.consumed && c.group != 3; });
         if (!whole) return;                                               // nothing in Chinese to commit: the mode stays
         commit_whole();
     }

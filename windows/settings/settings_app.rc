@@ -1,0 +1,3 @@
+// AquaTypeSettings.exe: its icon (the manifest is a source file in CMakeLists.txt)
+#include <windows.h>
+1 ICON "../tip/tsf/aquatype.ico"
