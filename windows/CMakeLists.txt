@@ -22,6 +22,7 @@ target_link_libraries(AquaTypeEngine PRIVATE aquadecoder nlohmann_json::nlohmann
 target_compile_definitions(AquaTypeEngine PRIVATE _CRT_SECURE_NO_WARNINGS)
 if(MSVC)
   target_compile_options(AquaTypeEngine PRIVATE /O2 /utf-8 /EHsc /W3)
+  set_property(TARGET AquaTypeEngine PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")   # runs on machines without the VC++ redistributable; the decoder's memory crosses only through aq_free
 endif()
 # No console window: the text service and the logon entry start it in the background.  Pipes still work for stdio mode (tests).
 target_link_options(AquaTypeEngine PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
