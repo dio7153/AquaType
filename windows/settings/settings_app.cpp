@@ -16,13 +16,14 @@
 namespace {
 using aqtip::Settings;
 
-enum Id { kSentence = 99, kShift = 100, kCaps, kInitial, kBopomofo, kEnEng, kAnAng, kRetroflex, kLexicon, kSize, kClear, kOk, kCancel, kApply };
+enum Id { kSentence = 99, kShift = 100, kCaps, kInitial, kBopomofo, kEnEng, kAnAng, kRetroflex, kLexicon, kSize, kClear, kOk, kCancel, kApply, kCtrlSpace };
 
 struct Item { int id; const wchar_t* text; bool Settings::*field; };
 struct Section { const wchar_t* title; std::vector<Item> items; };
 const std::vector<Section> kSections = {
     {L"輸入方式", {{kSentence, L"整句直出（直接顯示整句；← → 回到某個字，↓ 改選）", &Settings::sentence_preedit}}},
     {L"按鍵", {{kShift, L"單按 Shift 切換中／英", &Settings::shift_toggle},
+               {kCtrlSpace, L"Ctrl＋空白鍵切換中／英", &Settings::ctrl_space_toggle},
                {kCaps, L"CapsLock 開著時打英文（不勾：CapsLock 不影響注音）", &Settings::caps_english}}},
     {L"注音", {{kInitial, L"聲母加空白鍵直接打出注音符號（ㄅ 空白 → ㄅ）", &Settings::initial_symbol},
                {kBopomofo, L"候選字最後附上注音本身（「注」）", &Settings::bopomofo_candidate}}},

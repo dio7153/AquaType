@@ -261,10 +261,17 @@ HRESULT TextService::run(ITfContext* ctx, const std::function<void(TfEditCookie)
     s->Release(); return hr;
 }
 
+// Ctrl+Space switches 中/英, as in Microsoft Bopomofo (a setting).  Both key calls take it; the switch happens on the
+// real key down only, and not again on auto-repeat.
+bool TextService::ctrl_space(WPARAM w) {
+    return w == VK_SPACE && GetKeyState(VK_CONTROL) < 0 && GetKeyState(VK_MENU) >= 0 && GetKeyState(VK_SHIFT) >= 0 && composer_ &&
+           composer_->settings().ctrl_space_toggle && keyboard_open();
+}
 STDMETHODIMP TextService::OnTestKeyDown(ITfContext* ctx, WPARAM w, LPARAM, BOOL* eaten) {
     *eaten = FALSE;
     if (w == VK_SHIFT || w == VK_LSHIFT || w == VK_RSHIFT) { shift_down(); return S_OK; }
     if (GetKeyState(VK_SHIFT) < 0) other_key_with_shift_ = true;          // Shift+something: not a Shift tap
+    if (ctrl_space(w)) { *eaten = TRUE; return S_OK; }
     if (!composer_ || !keyboard_open()) return S_OK;
     guard([&] { composer_->pump(); *eaten = composer_->wants(make_key(w)) ? TRUE : FALSE; });
     return S_OK;
@@ -273,6 +280,7 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* ctx, WPARAM w, LPARAM l, BOOL* e
     *eaten = FALSE;
     if (w == VK_SHIFT || w == VK_LSHIFT || w == VK_RSHIFT) { shift_down(); return S_OK; }   // apps that skip OnTestKeyDown
     if (GetKeyState(VK_SHIFT) < 0) other_key_with_shift_ = true;
+    if (ctrl_space(w)) { *eaten = TRUE; if (!(l & (1 << 30))) toggle_mode(); return S_OK; }   // bit 30: the key was already down
     if (!composer_ || !keyboard_open()) return S_OK;
     const aqtip::Key k = make_key(w);
     bool wants = false; guard([&] { wants = composer_->wants(k); });
