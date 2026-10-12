@@ -28,7 +28,8 @@ static uint32_t vk_of(char c) {
 static void type(Composer& c, const std::string& keys) { for (char ch : keys) { Key k; k.vk = vk_of(ch); std::printf("%c", ch); c.key(k); } std::printf("|\n"); }
 static void press(Composer& c, uint32_t vk, bool shift = false) { Key k; k.vk = vk; k.shift = shift; c.key(k); }
 static void settle(Composer& c) { for (int i = 0; i < 100; i++) { c.pump(); Sleep(20); } c.refresh_preedit(); }
-static void classic(Composer& c) { Settings s; s.sentence_preedit = false; c.set_settings(s); }   // the bopomofo shown, picked from the panel
+static void classic(Composer& c) { Settings s; s.sentence_preedit = false; c.set_settings(s); }   // the bopomofo shown, picked from the panel (the default)
+static void sentence(Composer& c) { Settings s; s.sentence_preedit = true; c.set_settings(s); }   // 整句直出, an option
 
 int main(int argc, char** argv) {
     SetConsoleOutputCP(CP_UTF8); setvbuf(stdout, nullptr, _IONBF, 0);
@@ -68,26 +69,33 @@ int main(int argc, char** argv) {
     check("Shift tap: English, then back", [](Composer& c, RecordingHost&) { type(c, "rup wu0 "); settle(c); c.shift_tapped(); Key k; k.vk = 'A'; if (c.key(k) != Result::Pass) throw 1; c.shift_tapped(); type(c, "cl3"); settle(c); press(c, VK_RETURN); }, L"今天好");
 
     check("Shift+letter: a capital, still Chinese", [](Composer& c, RecordingHost&) { type(c, "rup wu0 "); settle(c); Key k; k.vk = 'A'; k.shift = true; if (c.key(k) != Result::Pass || c.ascii_mode()) throw 1; type(c, "cl3"); settle(c); press(c, VK_RETURN); }, L"今天好");
-    check("Space after a tone commits", [](Composer& c, RecordingHost&) { type(c, "cl3"); settle(c); Key k; k.vk = VK_SPACE; c.key(k); if (c.composing()) throw 1; }, L"好");
-    check("initial + Space: the symbol", [](Composer& c, RecordingHost&) { type(c, "1 q "); if (c.composing()) throw 1; }, L"ㄅㄆ");
-    check("the bopomofo, last candidate", [](Composer& c, RecordingHost&) { classic(c); type(c, "cl3"); settle(c); press(c, VK_END); press(c, VK_RETURN); }, L"ㄏㄠˇ");
-    check("CapsLock is ignored", [](Composer& c, RecordingHost&) { for (char ch : std::string("cl3")) { Key k; k.vk = vk_of(ch); k.caps = true; c.key(k); } settle(c); press(c, VK_RETURN); }, L"好");
-    check("CapsLock English when chosen", [](Composer& c, RecordingHost&) { Settings s; s.caps_english = true; c.set_settings(s); Key k; k.vk = 'C'; k.caps = true; if (c.wants(k) || c.key(k) != Result::Pass) throw 1; }, L"");
-    // 整句直出 (the default)
-    check("sentence shown in the composition", [](Composer& c, RecordingHost& h) { type(c, "rup wu0 wu0 fu4cp3cl3"); settle(c); if (h.preedit != L"今天天氣很好") { h.committed = L"preedit:" + h.preedit; return; } press(c, VK_RETURN); }, L"今天天氣很好");
-    check("go back and pick 妳", [](Composer& c, RecordingHost& h) {
+    check("Space after a tone: nothing", [](Composer& c, RecordingHost&) { type(c, "cl3"); settle(c); Key k; k.vk = VK_SPACE; if (c.key(k) != Result::Eaten || !c.composing()) throw 1; press(c, VK_RETURN); }, L"好");
+    check("Backspace: the last syllable only", [](Composer& c, RecordingHost& h) { type(c, "sucl3"); press(c, VK_BACK); if (h.preedit != L"ㄋㄧ") h.committed = L"preedit:" + h.preedit; else press(c, VK_ESCAPE); }, L"");
+    check("the pointer moves the highlight", [](Composer& c, RecordingHost& h) { type(c, "cl3"); settle(c); const PanelView v = c.panel(); if (v.cands->size() < 2 || !c.hover(1)) throw 1;
+        const std::wstring want = (*v.cands)[1].wtext; press(c, VK_RETURN); if (h.committed != want) h.committed = L"not the hovered one: " + h.committed; else h.committed = L"ok"; }, L"ok");
+    check("a repeated Enter is dropped", [](Composer& c, RecordingHost&) { type(c, "rup wu0 "); Key k; k.vk = VK_RETURN; k.time = GetTickCount(); c.key(k);   // waits for the answer
+        Key again = k; again.time = k.time + 1; if (!c.wants(again) || c.key(again) != Result::Eaten) throw 1;
+        Key later; later.vk = VK_RETURN; later.time = GetTickCount() + 1000; if (c.wants(later)) throw 2; }, L"今天");
+    check("initial + Space: the symbol", [](Composer& c, RecordingHost&) { Settings s; s.initial_symbol = true; c.set_settings(s); type(c, "1 q "); if (c.composing()) throw 1; }, L"ㄅㄆ");
+    check("the bopomofo, last candidate", [](Composer& c, RecordingHost&) { Settings s; s.bopomofo_candidate = true; c.set_settings(s); type(c, "cl3"); settle(c); press(c, VK_END); press(c, VK_RETURN); }, L"ㄏㄠˇ");
+    check("CapsLock ignored when chosen", [](Composer& c, RecordingHost&) { Settings s; s.caps_english = false; c.set_settings(s); for (char ch : std::string("cl3")) { Key k; k.vk = vk_of(ch); k.caps = true; c.key(k); } settle(c); press(c, VK_RETURN); }, L"好");
+    check("CapsLock: English", [](Composer& c, RecordingHost&) { Key k; k.vk = 'C'; k.caps = true; if (c.wants(k) || c.key(k) != Result::Pass) throw 1; }, L"");
+    // 整句直出 (an option)
+    check("sentence shown in the composition", [](Composer& c, RecordingHost& h) { sentence(c); type(c, "rup wu0 wu0 fu4cp3cl3"); settle(c); if (h.preedit != L"今天天氣很好") { h.committed = L"preedit:" + h.preedit; return; } press(c, VK_RETURN); }, L"今天天氣很好");
+    check("go back and pick 妳", [](Composer& c, RecordingHost& h) { sentence(c);
         type(c, "su3cl3"); settle(c); press(c, VK_LEFT); press(c, VK_LEFT); if (h.caret != 0) throw 1;
         press(c, VK_DOWN); settle(c); const PanelView v = c.panel(); int at = -1;
         for (int i = 0; i < (int)v.cands->size(); i++) if ((*v.cands)[i].wtext == L"妳") at = i;
         if (at < 0) { h.committed = L"no 妳 in the list"; return; }
         c.select(at); if (h.preedit != L"妳好") { h.committed = L"preedit:" + h.preedit; return; } press(c, VK_RETURN); }, L"妳好");
-    check("a pick holds while typing on", [](Composer& c, RecordingHost& h) {
+    check("a pick holds while typing on", [](Composer& c, RecordingHost& h) { sentence(c);
         type(c, "su3"); settle(c); press(c, VK_DOWN); settle(c); const PanelView v = c.panel(); int at = -1;
         for (int i = 0; i < (int)v.cands->size(); i++) if ((*v.cands)[i].wtext == L"妳") at = i;
         if (at < 0) { h.committed = L"no 妳 in the list"; return; }
         c.select(at); type(c, "cl3"); settle(c); press(c, VK_RETURN); }, L"妳好");
-    check("Backspace inside the sentence", [](Composer& c, RecordingHost&) { type(c, "su3cl3"); settle(c); press(c, VK_LEFT); press(c, VK_BACK); settle(c); press(c, VK_RETURN); }, L"好");
-    check("Esc closes the list, Enter commits", [](Composer& c, RecordingHost&) { type(c, "rup wu0 "); settle(c); press(c, VK_DOWN); press(c, VK_ESCAPE); if (c.panel_visible()) throw 1; press(c, VK_RETURN); }, L"今天");   // (你好 is 妳好 by now: the earlier cases taught the memory)
+    check("Backspace inside the sentence", [](Composer& c, RecordingHost&) { sentence(c); type(c, "su3cl3"); settle(c); press(c, VK_LEFT); press(c, VK_BACK); settle(c); press(c, VK_RETURN); }, L"好");
+    check("Esc closes the list, Enter commits", [](Composer& c, RecordingHost&) { sentence(c); type(c, "rup wu0 "); settle(c); press(c, VK_DOWN); press(c, VK_ESCAPE); if (c.panel_visible()) throw 1; press(c, VK_RETURN); }, L"今天");   // (你好 is 妳好 by now: the earlier cases taught the memory)
+    check("整句直出: Space after a tone commits", [](Composer& c, RecordingHost&) { sentence(c); type(c, "cl3"); settle(c); Key k; k.vk = VK_SPACE; c.key(k); if (c.composing()) throw 1; }, L"好");
     TerminateProcess(pi.hProcess, 0); WaitForSingleObject(pi.hProcess, 5000); CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
     std::printf("%s\n", failed ? "FAILED" : "all passed");
     return failed ? 1 : 0;

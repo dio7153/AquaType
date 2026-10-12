@@ -89,6 +89,7 @@ struct TextService::HostImpl : aqtip::Host {
     void beep() override { MessageBeep(MB_OK); }
     std::string context_before_caret() override { return context; }
     bool secure_input() override { return secure; }
+    bool drawable(const std::wstring& t) override { return CandidateWindow::drawable(t); }
 };
 
 TextService::TextService() { lock_module(); }
@@ -145,6 +146,7 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* tm, TfClientId id, DWORD flag
     reload_settings();
     panel_.on_select = [this](int i) { on_select(i); };
     panel_.on_page = [this](bool d) { on_page(d); };
+    panel_.on_hover = [this](int i) { if (composer_) guard([&] { if (composer_->hover(i)) panel_.update(composer_->panel()); }); };
     // the conversion mode (中/英), and Windows' own on/off: its Ctrl+Space hotkey for Chinese (Traditional) input methods
     for (auto [g, cookie] : {std::pair<const GUID*, DWORD*>{&GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, &mode_sink_}, {&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, &openclose_sink_}})
         if (ITfCompartment* c = compartment(*g)) { ITfSource* s = nullptr;
@@ -260,6 +262,7 @@ STDMETHODIMP TextService::Deactivate() {
 // ---------------------------------------------------------------- keys
 aqtip::Key TextService::make_key(WPARAM w) const {
     aqtip::Key k; k.vk = (uint32_t)w; k.shift = GetKeyState(VK_SHIFT) < 0; k.ctrl = GetKeyState(VK_CONTROL) < 0; k.alt = GetKeyState(VK_MENU) < 0; k.caps = (GetKeyState(VK_CAPITAL) & 1) != 0;
+    k.time = (uint32_t)GetMessageTime();                                 // when it was pressed, not when it reached us
     return k;
 }
 bool TextService::keyboard_open() {
@@ -449,6 +452,7 @@ void TextService::after_edit(TfEditCookie ec, ITfContext* ctx) {
         if (GetGUIThreadInfo(GetCurrentThreadId(), &gi) && gi.hwndCaret) { POINT p{gi.rcCaret.left, gi.rcCaret.bottom}; ClientToScreen(gi.hwndCaret, &p); anchor_ = RECT{p.x, p.y - (gi.rcCaret.bottom - gi.rcCaret.top), p.x + 1, p.y}; placed = true; }
     }
     have_anchor_ = have_anchor_ || placed;
+    composer_->set_line_chars(CandidateWindow::columns(anchor_, panel_.text_size()));   // before the page is chosen
     panel_.show(composer_->panel(), anchor_);
 }
 void TextService::on_engine() {

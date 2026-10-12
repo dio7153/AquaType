@@ -7,6 +7,7 @@
 //     the reply timeout) instead of being queued and replayed later.  Same result for the person typing, much less state.
 //   - When the engine is unavailable there is no librime to convert with: the composition is committed as bopomofo.
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -19,6 +20,7 @@ namespace aqtip {
 struct Key {
     uint32_t vk = 0;                 // virtual-key code
     bool shift = false, ctrl = false, alt = false, caps = false;
+    uint32_t time = 0;               // when it was pressed (GetMessageTime / GetTickCount); 0: unknown
 };
 
 struct Candidate {
@@ -48,6 +50,9 @@ public:
     virtual void beep() = 0;
     virtual std::string context_before_caret() = 0;             // up to 256 UTF-16 units before the insertion point, UTF-8; "" when unknown
     virtual bool secure_input() = 0;                             // a password field: nothing is remembered
+    // Whether every character of a candidate has a font to draw it (else it shows as a box): AquaType leaves out the
+    // ones that would not show.
+    virtual bool drawable(const std::wstring&) { return true; }
 };
 
 // The engine connection, as the composer needs it.
@@ -76,6 +81,11 @@ public:
     // A click on a candidate row.
     void select(int index);
     void page(bool down);
+    // The pointer over a candidate row: it becomes the highlighted one (returns true when that changed).
+    bool hover(int index);
+    // How many full-width characters a line of the candidate window holds: a page has nine lines, and a long candidate
+    // takes as many as it wraps to (the window works it out from the screen, as the Mac panel does).
+    void set_line_chars(int n) { line_chars_ = std::max(8, n); }
     // Focus left the field or the input method was switched away: commit what is there.
     void focus_lost();
 
@@ -120,7 +130,7 @@ private:
     void backspace();
     void move(int to);
     std::vector<std::vector<int>> pages() const { return pages_of(sentence_mode() ? pick_ : cands_); }
-    static std::vector<std::vector<int>> pages_of(const std::vector<Candidate>& list);
+    std::vector<std::vector<int>> pages_of(const std::vector<Candidate>& list) const;
     int page_of(int index) const;
     // 整句直出
     static std::vector<std::string> segments(const std::string& raw);   // each syllable's keys, its tone key last; the last may be unfinished
@@ -149,11 +159,14 @@ private:
     std::optional<std::string> queued_raw_;
     bool engine_unavailable_ = false; int retries_ = 0; std::string retry_raw_;
     uint64_t waited_seq_ = 0;
+    uint32_t waited_from_ = 0, waited_to_ = 0;   // the last wait for an answer before a commit (GetTickCount)
+    bool pressed_while_waiting(const Key& k) const { return k.time && waited_to_ && k.time - waited_from_ <= waited_to_ - waited_from_; }
     std::vector<std::pair<std::string, std::string>> pieces_;          // (text, keys) committed in parts
     bool ascii_global_ = false, ascii_session_ = false;
     bool single_quote_open_ = false, double_quote_open_ = false;
     // 整句直出: the caret (in characters, -1 = at the end), the characters picked by hand (by position), the list open
     int caret_ = -1; std::map<int, std::wstring> locks_;
+    int line_chars_ = 20;
     bool choosing_ = false; std::vector<Candidate> pick_; int pick_hi_ = 0, pick_k_ = 0, pick_engine_from_ = 0; uint64_t pick_gen_ = 0;
     std::string pick_client_id_; std::wstring pick_bopomofo_;
     uint64_t panel_version_ = 0;

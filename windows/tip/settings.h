@@ -11,15 +11,15 @@ inline constexpr wchar_t kSettingsKey[] = L"Software\\AquaType";
 inline constexpr wchar_t kSettingsChangedMessage[] = L"AquaTypeSettingsChanged";   // RegisterWindowMessage name
 
 struct Settings {
-    bool sentence_preedit = true;        // 整句直出: the composition shows the sentence; ← → ↓ to go back and pick (Microsoft Bopomofo's way)
+    bool sentence_preedit = false;       // 整句直出: the composition shows the sentence; ← → ↓ to go back and pick (Microsoft Bopomofo's way).  Off, as AquaType: the bopomofo, and the list of sentences to pick from
     bool shift_toggle = true;            // a Shift tap switches 中/英
-    bool caps_english = false;           // CapsLock on types English (Microsoft Bopomofo's way); off: CapsLock is ignored
-    bool initial_symbol = true;          // an initial alone then Space types the symbol itself (ㄅ␣ → ㄅ)
-    bool bopomofo_candidate = true;      // the bopomofo itself, last in the list (the 「注」 group)
-    bool fuzzy_en_eng = true;            // ㄣ/ㄥ
-    bool fuzzy_an_ang = true;            // ㄢ/ㄤ
-    bool fuzzy_retroflex = true;         // ㄓㄗ ㄔㄘ ㄕㄙ
-    bool lexicon_priority = true;        // dictionary words before the model's guesses for 2-4 characters
+    bool caps_english = true;            // CapsLock on types English (AquaType's and Microsoft Bopomofo's way); off: CapsLock is ignored
+    bool initial_symbol = false;         // an initial alone then Space types the symbol itself (ㄅ␣ → ㄅ)
+    bool bopomofo_candidate = false;     // the bopomofo itself, last in the list (the 「注」 group)
+    bool fuzzy_en_eng = false;           // ㄣ/ㄥ   (the three: off as on the Mac, whose decoder has none)
+    bool fuzzy_an_ang = false;           // ㄢ/ㄤ
+    bool fuzzy_retroflex = false;        // ㄓㄗ ㄔㄘ ㄕㄙ
+    bool lexicon_priority = false;       // dictionary words before the model's guesses for 2-4 characters (the Mac keeps the model's order)
     int candidate_size = 1;              // 0 small, 1 medium, 2 large
 
     bool operator==(const Settings& o) const {
@@ -30,7 +30,7 @@ struct Settings {
     static Settings load();
     bool save() const;
     std::string fuzzy_pairs() const;     // the decoder's AQ_FUZZY: key pairs separated by spaces, "0" for none
-    float candidate_text_size() const { return candidate_size == 0 ? 16.f : candidate_size == 2 ? 22.f : 18.f; }
+    float candidate_text_size() const { return candidate_size == 0 ? 13.f : candidate_size == 2 ? 18.f : 15.f; }   // medium: the Mac's 15 pt
 };
 
 }  // namespace aqtip

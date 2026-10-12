@@ -18,7 +18,7 @@ namespace {
 const char* kRawKeys = "1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/- 6347";
 bool is_tone(char c) { return c == ' ' || c == '6' || c == '3' || c == '4' || c == '7'; }
 constexpr size_t kKeyCap = 190, kMaxSentenceChars = 120;
-constexpr int kMaxCandidates = 63, kPanelLines = 9, kLineChars = 20;
+constexpr int kMaxCandidates = 63, kPanelLines = 9;
 
 std::wstring widen(const std::string& s) {
     if (s.empty()) return {}; int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
@@ -121,6 +121,7 @@ bool Composer::wants(const Key& k) const {
     if (k.ctrl || k.alt) return comp;                                     // commit (or edit) the composition before the chord reaches the app
     if (ascii_mode()) return false;
     if (comp) return true;                                                // while composing every key is ours to route
+    if (k.vk == VK_RETURN && !k.shift && pressed_while_waiting(k)) return true;
     if (k.caps && settings_.caps_english) return false;
     if (!c || c == ' ') return false;                                    // a space with nothing composed is a space
     if (k.shift && k.vk >= 'A' && k.vk <= 'Z') return false;
@@ -138,8 +139,10 @@ Result Composer::key(const Key& k) {
         commit_whole(/*remember=*/false); return Result::Pass;                 // a shortcut ends the composition; what it committed is not learned
     }
     if (ascii_mode()) return Result::Pass;
-    // CapsLock is ignored unless the person asked for Microsoft Bopomofo's way (CapsLock on = English): left on by
-    // accident it silently turned every key into English.
+    // An Enter pressed while the last Enter waited for its answer: that one committed the composition, this one is a
+    // repeat, not a new line (in a chat it would send the message).  AquaType drops it the same way.
+    if (!comp && k.vk == VK_RETURN && !k.shift && pressed_while_waiting(k)) { waited_to_ = 0; return Result::Eaten; }
+    // CapsLock on = English, as AquaType and Microsoft Bopomofo do; a setting can make it ignored instead.
     if (k.caps && settings_.caps_english && c && c != ' ') { if (comp) commit_whole(); return Result::Pass; }
 
     if (comp && sentence_mode()) { bool handled = false; const Result r = sentence_key(k, c, &handled); if (handled) return r; }
@@ -170,9 +173,13 @@ Result Composer::key(const Key& k) {
         if (c == ' ' && !comp) return Result::Pass;
         // An initial that is no syllable on its own (ㄅ…ㄒ), then Space: the symbol itself, for writing bopomofo
         if (c == ' ' && settings_.initial_symbol && raw_.size() == 1 && std::strchr("1qaz2wsxedcrfv", raw_[0])) { commit_bopomofo(); return Result::Eaten; }
-        if (c == ' ' && is_tone(raw_.back())) {                           // the syllable is complete: Space confirms, as Enter does (the next Space is a space)
+        if (c == ' ' && is_tone(raw_.back())) {
+            // The syllable already has its tone.  AquaType swallows the Space (an extra syllable would turn 注意 into 注意阿,
+            // and confirming would commit a first sentence that is often not the one meant); 整句直出 confirms, as
+            // Microsoft Bopomofo does.
+            if (!sentence_mode()) return Result::Eaten;
             if (waiting_for_current()) wait_for_answer(commit_wait_ms(raw_.size()));
-            if (sentence_mode() || !(panel_raw_ == raw_ && !cands_.empty()) || !commit_highlighted()) commit_whole();
+            commit_whole();
             return Result::Eaten;
         }
         if (raw_.size() >= kKeyCap && !is_tone(c)) { host_.beep(); return Result::Eaten; }
@@ -197,12 +204,29 @@ Result Composer::punctuation(const Key& k, char c) {
     host_.commit(sym); return Result::Eaten;
 }
 
+// The keys of the last syllable of `raw` (which has no trailing Space): read from the start as initial, medial, final
+// and tone, each at most once, as AquaType does - so a syllable typed without its tone before it is not taken along.
+static size_t last_syllable_keys(const std::string& raw) {
+    auto in = [](const char* set, char c) { return c && std::strchr(set, c) != nullptr; };
+    size_t i = 0, start = 0;
+    while (i < raw.size()) {
+        start = i;
+        if (is_tone(raw[i])) { i++; continue; }
+        bool any = false;
+        if (in("1qaz2wsxedcrfv5tgbyhn", raw[i])) { i++; any = true; }
+        if (i < raw.size() && in("ujm", raw[i])) { i++; any = true; }
+        if (i < raw.size() && in("8ik,9ol.0p;/-", raw[i])) { i++; any = true; }
+        if (!any) i++;
+        else if (i < raw.size() && is_tone(raw[i])) i++;
+    }
+    return raw.size() - start;
+}
+
 void Composer::backspace() {
     std::string r = raw_;
-    if (!r.empty() && is_tone(r.back())) {                                // a whole syllable: its tone and every key back to the previous one
+    if (!r.empty() && is_tone(r.back())) {                                // a whole syllable: its tone, its keys and a tone-1 Space
         while (!r.empty() && r.back() == ' ') r.pop_back();
-        if (!r.empty() && is_tone(r.back())) r.pop_back();
-        while (!r.empty() && !is_tone(r.back())) r.pop_back();
+        if (!r.empty()) r.erase(r.size() - std::max<size_t>(1, last_syllable_keys(r)));
     } else if (!r.empty()) r.pop_back();
     if (r.empty() || echo(r).empty()) { clear_composition(); return; }
     locks_.erase(locks_.lower_bound((int)segments(r).size()), locks_.end());
@@ -274,7 +298,7 @@ void Composer::handle_line(const std::string& line) {
         static const std::set<std::string> all = {"G_DECODER_MEMORY", "G_DECODER_MODEL", "G_NATIVE_AQDS", "G_CHAR_TABLE"}, fallback = {"G_NATIVE_AQDS", "G_CHAR_TABLE"};
         for (auto& r : j.value("candidates", json::array())) {
             Candidate c; c.text = r.value("text_utf8", std::string()); c.wtext = widen(c.text);
-            if (c.text.empty() || !all_han(c.wtext)) continue;
+            if (c.text.empty() || !all_han(c.wtext) || !host_.drawable(c.wtext)) continue;
             bool ok = true; for (auto& p : r.value("provenance", json::array())) { std::string s = p.get<std::string>(); if (!(decoder ? all : fallback).count(s)) ok = false; c.provenance.push_back(s); }
             if (!ok || c.provenance.empty()) continue;
             if (r.contains("consumed_keys") && r["consumed_keys"].is_number_integer()) c.consumed = r["consumed_keys"].get<int>();
@@ -306,13 +330,14 @@ bool Composer::waiting_for_current() const { return composing() && !(panel_raw_ 
 
 void Composer::wait_for_answer(uint32_t ms) {
     TR("[wait] seq %llu raw %s in_flight %d queued %d for %u ms\n", seq_, raw_.c_str(), (int)in_flight_, (int)queued_raw_.has_value(), ms);
-    waited_seq_ = seq_;
+    waited_seq_ = seq_; waited_from_ = GetTickCount();
     if (!in_flight_ && !queued_raw_) send_request(raw_);
     const uint64_t deadline = GetTickCount64() + ms; std::string line;
     while (!(panel_raw_ == raw_ && published_seq_ == seq_) && !engine_unavailable_) {
         const uint64_t now = GetTickCount64(); if (now >= deadline) { engine_unavailable_ = true; in_flight_ = false; break; }
         if (engine_.next_line(&line, (uint32_t)(deadline - now))) handle_line(line);
     }
+    waited_to_ = GetTickCount();
 }
 
 // ---------------------------------------------------------------- commits
@@ -374,10 +399,10 @@ void Composer::record(const std::string& keys, const std::string& text) {
 }
 
 // ---------------------------------------------------------------- the panel
-std::vector<std::vector<int>> Composer::pages_of(const std::vector<Candidate>& list) {
+std::vector<std::vector<int>> Composer::pages_of(const std::vector<Candidate>& list) const {
     std::vector<std::vector<int>> out; std::vector<int> cur; int lines = 0;
     for (int i = 0; i < (int)list.size(); i++) {
-        const int need = std::max(1, (int)((code_points(list[i].wtext).size() + kLineChars - 1) / kLineChars));
+        const int need = std::max(1, (int)((code_points(list[i].wtext).size() + line_chars_ - 1) / line_chars_));
         if (!cur.empty() && lines + need > kPanelLines) { out.push_back(cur); cur.clear(); lines = 0; }
         cur.push_back(i); lines += need;
     }
@@ -398,7 +423,7 @@ void Composer::page(bool down) {
     if (cands_.empty() || panel_raw_ != raw_) return;
     auto ps = pages(); int p = page_of(highlighted_);
     if (down) { if (p + 1 < (int)ps.size()) highlighted_ = ps[p + 1][0]; }
-    else highlighted_ = p > 0 ? ps[p - 1][0] : ps[0][0];
+    else if (p > 0) highlighted_ = ps[p - 1][0];                          // on the first page it stays where it is, as AquaType
 }
 PanelView Composer::panel() const {
     PanelView v;
@@ -413,6 +438,9 @@ PanelView Composer::panel() const {
 void Composer::select(int index) {
     if (sentence_mode()) { pick(index); return; }
     if (panel_raw_ != raw_ || index < 0 || index >= (int)cands_.size()) return; highlighted_ = index; commit_highlighted(); }
+bool Composer::hover(int index) {
+    if (sentence_mode()) { if (index < 0 || index >= (int)pick_.size() || index == pick_hi_) return false; pick_hi_ = index; panel_version_++; return true; }
+    if (panel_raw_ != raw_ || index < 0 || index >= (int)cands_.size() || index == highlighted_) return false; highlighted_ = index; return true; }
 
 // ---------------------------------------------------------------- 整句直出
 // The composition shows the sentence the engine ranks first, with the characters picked by hand kept in place; keys the
