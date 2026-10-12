@@ -20,5 +20,6 @@ Copy-Item "$repo\data\char_to_keys.json" "$out\data"
 Copy-Item "$PSScriptRoot\install.ps1", "$PSScriptRoot\uninstall.ps1" $out
 Copy-Item "$repo\LICENSE", "$repo\NOTICE.txt" "$out\licenses"
 Copy-Item "$repo\packaging\legal\*" "$out\licenses"
+Copy-Item "$repo\third_party\squirrel\LICENSE.txt" "$out\licenses\LICENSE-GPL-3.0.txt"     # the text service and the settings window
 $size = (Get-ChildItem -Recurse $out | Measure-Object Length -Sum).Sum / 1MB
 "staged $out ({0:N0} MB)" -f $size
