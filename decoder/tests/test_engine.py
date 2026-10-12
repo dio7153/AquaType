@@ -65,6 +65,17 @@ def test_engine_jsonl_contract(tmp_path):
     r5 = d.send(request(c2k["我"], 1)); assert r5["visible_path"] == "DETERMINISTIC_RIME_AQDS_PERSONAL_V1" and any(c["text_utf8"] == "我" for c in r5["candidates"])
     assert "decoder unavailable" in d.close()
 
+@pytest.mark.skipif(os.name != "nt" or not (REPO / "packaging/payload/rime/terra_pinyin.dict.yaml").exists(), reason="the Windows engine's --char-readings")
+def test_other_readings(tmp_path):
+    """char_to_keys.json has one reading a character; the dictionary's other readings make 蔚 typable as ㄩˋ too (its table
+    reading is ㄨㄟˋ), after the characters that read ㄩˋ in the table; without the dictionary it is not offered."""
+    common = ["--command", "serve-ui-jsonl", "--decoder-dir", str(DECODER), "--fallback-aqds", str(AQDS), "--fallback-manifest", str(AQDS) + ".manifest.json",
+              "--char-to-keys", str(REPO / "data/char_to_keys.json"), "--state-dir", str(tmp_path)]
+    def texts(extra):
+        e = EngineProc(common + extra); r = e.send(request("m4", 1, max_n=9)); e.close(); return [c["text_utf8"] for c in r["candidates"]]
+    plain, more = texts([]), texts(["--char-readings", str(REPO / "packaging/payload/rime/terra_pinyin.dict.yaml")])
+    assert "蔚" not in plain and "蔚" in more and more.index("蔚") > more.index("鬻") and [t for t in more if t in plain] == plain
+
 def test_engine_char_coverage():
     r = subprocess.run([str(BIN), "--check-char-coverage", str(REPO / "data/char_to_keys.json")], capture_output=True, text=True, encoding="utf-8", timeout=300)
     assert r.returncode == 0 and json.loads(r.stdout.strip().splitlines()[-1])["missing"] == 0

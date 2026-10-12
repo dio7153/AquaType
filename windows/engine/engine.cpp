@@ -2,7 +2,8 @@
 // child process and talks to it in JSON lines over stdin/stdout - in C++, on the decoder's C API (aquadecoder.dll, the
 // CPU backend).  Every rule below is the Swift engine's; the comments there carry the reasons.
 //   AquaTypeEngine --command serve-ui-jsonl --fallback-aqds F --fallback-manifest M
-//                  [--decoder-dir D] [--metallib L] [--char-to-keys C] [--state-dir S]
+//                  [--decoder-dir D] [--metallib L] [--char-to-keys C] [--char-readings R] [--state-dir S]
+//                  (R: a character's other readings, terra_pinyin.dict.yaml; by default the one beside C, if there)
 //   AquaTypeEngine --check-char-coverage C
 //   AquaTypeEngine --selftest [--raw K] --decoder-dir D ...
 //   AquaTypeEngine --version
@@ -103,6 +104,43 @@ struct CharKeyIndex {
         for (auto it = d.begin(); it != d.end(); ++it) by_raw[it.value().get<std::string>()].push_back(it.key());   // nlohmann's object is sorted by key, as the Swift side sorts
         count = d.size();
     }
+    // char_to_keys.json gives each character one reading; 行 typed ㄏㄤˊ or 蔚 typed ㄩˋ has no character there.  The
+    // other readings come from a Rime dictionary ("char<TAB>pinyin<TAB>share%", terra_pinyin): a reading with at least
+    // `min_share` percent (below that they are mostly tone sandhi, 一 yi2 1%) is added under its keys.  Pinyin is turned
+    // into keys by what the table itself types for the characters that have one reading only.  A reading used less than
+    // the table's own sorts after the characters of its frequency tier (ranked / known / other) that read it as their table reading.
+    std::set<std::string> minor;      // raw + '\t' + char
+    size_t added = 0;
+    void add_readings(const std::wstring& path, double min_share = 5.0) {
+        std::map<std::string, std::vector<std::pair<std::string, double>>> readings; std::map<std::string, std::string> table;
+        for (auto& [raw, chs] : by_raw) for (auto& ch : chs) table[ch] = raw;
+        const std::string text = read_file(path); bool body = false; size_t at = 0;
+        while (at < text.size()) {
+            size_t end = text.find('\n', at); if (end == std::string::npos) end = text.size();
+            std::string line = text.substr(at, end - at); at = end + 1; if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (!body) { body = line.rfind("...", 0) == 0; continue; }
+            if (line.empty() || line[0] == '#') continue;
+            const size_t t1 = line.find('\t'); if (t1 == std::string::npos) continue;
+            const size_t t2 = line.find('\t', t1 + 1);
+            const std::string ch = line.substr(0, t1), py = line.substr(t1 + 1, t2 == std::string::npos ? std::string::npos : t2 - t1 - 1);
+            if (code_points(ch).size() != 1 || !table.count(ch)) continue;
+            double share = -1; if (t2 != std::string::npos && line.back() == '%') share = std::atof(line.c_str() + t2 + 1);
+            readings[ch].push_back({py, share});
+        }
+        std::map<std::string, std::map<std::string, int>> votes;
+        for (auto& [ch, rs] : readings) if (rs.size() == 1) votes[rs[0].first][table[ch]]++;
+        std::map<std::string, std::string> keys_of;
+        for (auto& [py, v] : votes) keys_of[py] = std::max_element(v.begin(), v.end(), [](auto& a, auto& b) { return a.second < b.second; })->first;
+        for (auto& [ch, rs] : readings) {
+            if (rs.size() < 2) continue;
+            const std::string& own = table[ch]; double own_share = 0; std::map<std::string, double> by_keys;
+            for (auto& [py, share] : rs) { auto k = keys_of.find(py); if (k == keys_of.end()) continue; const double s = share < 0 ? 100 : share;
+                if (k->second == own) own_share = std::max(own_share, s); else by_keys[k->second] = std::max(by_keys[k->second], s); }
+            for (auto& [keys, s] : by_keys) { if (s < min_share) continue;
+                by_raw[keys].push_back(ch); added++; if (s < own_share) minor.insert(keys + "\t" + ch); }
+        }
+    }
+    bool is_minor(const std::string& raw, const std::string& ch) const { return minor.count(raw + "\t" + ch) != 0; }
     const std::vector<std::string>& chars(const std::string& raw) const { static const std::vector<std::string> none; auto it = by_raw.find(raw); return it == by_raw.end() ? none : it->second; }
     std::vector<std::string> coverage_gaps() const {
         static const std::string keyboard = "1234567890-qwertyuiop asdfghjkl;zxcvbnm,./"; std::vector<std::string> missing;
@@ -270,7 +308,7 @@ struct Engine {
                 model_syllables.push_back({*k, end + 1 == raw_count ? std::nullopt : std::optional<int>(end + 1)}); }
         }
         struct Word { std::string text; std::optional<int> consumed; double weight; }; std::vector<Word> words;
-        struct Ch { std::string text; std::optional<int> consumed; }; std::vector<Ch> chars;
+        struct Ch { std::string text; std::optional<int> consumed; bool minor = false; }; std::vector<Ch> chars;
         auto add_words = [&](const std::vector<Piece>& pieces) {
             if (pieces.size() < 2) return;
             for (size_t count = std::min<size_t>(pieces.size(), 6); count >= 2; count--) { std::string piece; for (size_t i = 0; i < count; i++) piece += pieces[i].keys;
@@ -282,15 +320,15 @@ struct Engine {
         { std::vector<Piece> ps; for (size_t i = 0; i < syllables.size(); i++) ps.push_back({syllables[i].keys, consumed(i + 1)}); add_words(ps); }
         if (words.empty()) add_words(model_syllables);
         std::vector<std::string> typing;
-        if (!syllables.empty() && char_index && !char_index->chars(syllables[0].keys).empty()) { for (auto& c : char_index->chars(syllables[0].keys)) chars.push_back({c, consumed(1)}); }
+        if (!syllables.empty() && char_index && !char_index->chars(syllables[0].keys).empty()) { for (auto& c : char_index->chars(syllables[0].keys)) chars.push_back({c, consumed(1), char_index->is_minor(syllables[0].keys, c)}); }
         else if (syllables.empty() && !(typing = every_tone(pending)).empty()) { for (auto& c : typing) chars.push_back({c, std::nullopt}); }
-        else if (!model_syllables.empty() && char_index && !char_index->chars(model_syllables[0].keys).empty()) { for (auto& c : char_index->chars(model_syllables[0].keys)) chars.push_back({c, model_syllables[0].consumed}); }
+        else if (!model_syllables.empty() && char_index && !char_index->chars(model_syllables[0].keys).empty()) { for (auto& c : char_index->chars(model_syllables[0].keys)) chars.push_back({c, model_syllables[0].consumed, char_index->is_minor(model_syllables[0].keys, c)}); }
         else if (!syllables.empty()) { for (auto& c : chars_with_tolerance(syllables[0].keys)) chars.push_back({c, consumed(1)}); }
         std::stable_sort(words.begin(), words.end(), [&](const Word& a, const Word& b) { int ca = a.consumed.value_or(raw_count), cb = b.consumed.value_or(raw_count); if (ca != cb) return ca > cb; return a.weight > b.weight; });
         for (auto& w : words) add(w.text, src_aqds, w.consumed);
         if (freq && freq->ok) std::stable_sort(chars.begin(), chars.end(), [&](const Ch& a, const Ch& b) {
             int ca = a.consumed.value_or(raw_count), cb = b.consumed.value_or(raw_count); if (ca != cb) return ca > cb;
-            auto oa = freq->order(a.text), ob = freq->order(b.text); if (oa.first != ob.first) return oa.first < ob.first; if (oa.second != ob.second) return oa.second < ob.second; return a.text < b.text; });
+            auto oa = freq->order(a.text), ob = freq->order(b.text); if (oa.first != ob.first) return oa.first < ob.first; if (a.minor != b.minor) return b.minor; if (oa.second != ob.second) return oa.second < ob.second; return a.text < b.text; });
         for (auto& c : chars) add(c.text, src_chars, c.consumed);
 
         ojson out; out["schema"] = response_schema; out["client_id"] = req.client_id; out["client_generation"] = req.generation; out["raw_keys"] = req.raw_keys;
@@ -436,6 +474,14 @@ static Engine make_engine(const Args& a) {
     CreateDirectoryW(widen(state).c_str(), nullptr);                    // the user's profile is already private to them
     if (const char* p = a.get("--char-to-keys")) { try { e.char_index = std::make_unique<CharKeyIndex>(widen(p)); } catch (...) {} }
     if (!e.char_index) log("[engine] char_to_keys.json not found; the third source has no character table");
+    if (e.char_index) {                                                 // the other readings: --char-readings, or the dictionary beside char_to_keys.json
+        std::wstring r = a.get("--char-readings") ? widen(a.get("--char-readings")) : widen(a.get("--char-to-keys"));
+        if (!a.get("--char-readings")) { const size_t slash = r.find_last_of(L"\\/"); r = (slash == std::wstring::npos ? L"" : r.substr(0, slash + 1)) + L"terra_pinyin.dict.yaml"; }
+        if (GetFileAttributesW(r.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            try { e.char_index->add_readings(r); log("[engine] other readings: " + std::to_string(e.char_index->added)); }
+            catch (const std::exception& ex) { log(std::string("[engine] other readings not read: ") + ex.what()); }
+        }
+    }
     if (const char* d = a.get("--decoder-dir")) { e.decoder = DecoderSession::open(d, a.get("--metallib")); if (e.decoder) e.decoder->warm_up(); }
     if (e.decoder) g_maintain = e.decoder->handle;
     if (const char* d = a.get("--decoder-dir")) { e.freq = std::make_unique<CharFrequency>(widen(d)); if (!e.freq->ok) e.freq.reset(); }

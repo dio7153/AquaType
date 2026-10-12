@@ -1,5 +1,5 @@
 ﻿# Assembles the install folder (dist\AquaType-win) from the build and the restored payload:
-#   AquaTypeTSF.dll  AquaTypeEngine.exe  AquaTypeSettings.exe  aquadecoder.dll (+ _avx2 / _sse, the one it loads)  data\decoder\*  data\dict_store\*  data\char_to_keys.json
+#   AquaTypeTSF.dll  AquaTypeEngine.exe  AquaTypeSettings.exe  aquadecoder.dll (+ _avx2 / _sse, the one it loads)  data\decoder\*  data\dict_store\*  data\char_to_keys.json  data\terra_pinyin.dict.yaml
 #   install.ps1  uninstall.ps1  licenses\*
 #   powershell -File windows\install\stage.ps1
 $ErrorActionPreference = 'Stop'
@@ -17,6 +17,7 @@ Copy-Item "$dec\model.json", "$dec\model.safetensors", "$dec\norm_rank.bin", "$d
 $ds = "$repo\packaging\payload\dict_store"
 Copy-Item "$ds\dictionary_fallback.v1.aqds", "$ds\dictionary_fallback.v1.aqds.manifest.json" "$out\data\dict_store"
 Copy-Item "$repo\data\char_to_keys.json" "$out\data"
+Copy-Item "$repo\packaging\payload\rime\terra_pinyin.dict.yaml" "$out\data"   # a character's other readings: the engine reads it beside char_to_keys.json
 Copy-Item "$PSScriptRoot\install.ps1", "$PSScriptRoot\uninstall.ps1" $out
 Copy-Item "$repo\LICENSE", "$repo\NOTICE.txt" "$out\licenses"
 Copy-Item "$repo\packaging\legal\*" "$out\licenses"
