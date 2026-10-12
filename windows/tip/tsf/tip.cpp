@@ -145,11 +145,13 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* tm, TfClientId id, DWORD flag
     reload_settings();
     panel_.on_select = [this](int i) { on_select(i); };
     panel_.on_page = [this](bool d) { on_page(d); };
-    if (ITfCompartment* c = mode_compartment()) { ITfSource* s = nullptr;
-        if (SUCCEEDED(c->QueryInterface(IID_ITfSource, (void**)&s))) { s->AdviseSink(IID_ITfCompartmentEventSink, static_cast<ITfCompartmentEventSink*>(this), &mode_sink_); s->Release(); }
-        c->Release(); }
+    // the conversion mode (中/英), and Windows' own on/off: its Ctrl+Space hotkey for Chinese (Traditional) input methods
+    for (auto [g, cookie] : {std::pair<const GUID*, DWORD*>{&GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, &mode_sink_}, {&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, &openclose_sink_}})
+        if (ITfCompartment* c = compartment(*g)) { ITfSource* s = nullptr;
+            if (SUCCEEDED(c->QueryInterface(IID_ITfSource, (void**)&s))) { s->AdviseSink(IID_ITfCompartmentEventSink, static_cast<ITfCompartmentEventSink*>(this), cookie); s->Release(); }
+            c->Release(); }
     mode_button_ = new InputModeButton();
-    mode_button_->is_ascii = [this] { return composer_ && composer_->ascii_mode(); };
+    mode_button_->is_ascii = [this] { return composer_ && (composer_->ascii_mode() || !keyboard_open()); };   // off types English too
     mode_button_->on_click = [this] { toggle_mode(); };
     mode_button_->on_menu = [this](POINT p) { show_menu(p); };
     ITfLangBarItemMgr* lbm = nullptr;
@@ -167,6 +169,7 @@ void TextService::reload_settings() {
 // as a Shift tap: going to English commits what is being composed first
 void TextService::toggle_mode() {
     if (!composer_) return;
+    if (!keyboard_open()) { open_keyboard(); return; }
     if (composer_->composing() && comp_ctx_) { ITfContext* c = comp_ctx_; c->AddRef();
         run(c, [this, c](TfEditCookie ec) { host_->ec = ec; host_->ctx = c; composer_->shift_tapped(); after_edit(ec, c); sync_input_mode(); host_->ec = TF_INVALID_EDIT_COOKIE; host_->ctx = nullptr; }, false);
         c->Release(); }
@@ -177,7 +180,7 @@ void TextService::show_menu(POINT at) {
     if (!msg_hwnd_ || !composer_) return;
     HMENU m = CreatePopupMenu(); if (!m) return;
     enum { kToggle = 1, kSettings = 2 };
-    AppendMenuW(m, MF_STRING, kToggle, composer_->ascii_mode() ? L"切換到中文" : L"切換到英文");
+    AppendMenuW(m, MF_STRING, kToggle, (composer_->ascii_mode() || !keyboard_open()) ? L"切換到中文" : L"切換到英文");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, kSettings, L"設定…");
     SetForegroundWindow(msg_hwnd_);                  // so the menu closes when the person clicks elsewhere
@@ -202,10 +205,15 @@ STDMETHODIMP TextService::GetDisplayName(BSTR* name) { if (!name) return E_INVAL
 STDMETHODIMP TextService::Show(HWND, LANGID, REFGUID) { open_settings_app(); return S_OK; }
 
 // The input mode compartment is what Windows shows as 中/英 on the taskbar, and clicking that indicator changes it.
-ITfCompartment* TextService::mode_compartment() {
+ITfCompartment* TextService::compartment(REFGUID g) {
     ITfCompartmentMgr* cm = nullptr; ITfCompartment* c = nullptr;
-    if (tm_ && SUCCEEDED(tm_->QueryInterface(IID_ITfCompartmentMgr, (void**)&cm))) { cm->GetCompartment(GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, &c); cm->Release(); }
+    if (tm_ && SUCCEEDED(tm_->QueryInterface(IID_ITfCompartmentMgr, (void**)&cm))) { cm->GetCompartment(g, &c); cm->Release(); }
     return c;
+}
+void TextService::open_keyboard() {
+    if (ITfCompartment* c = compartment(GUID_COMPARTMENT_KEYBOARD_OPENCLOSE)) {
+        VARIANT v; VariantInit(&v); v.vt = VT_I4; v.lVal = TRUE; setting_mode_ = true; c->SetValue(id_, &v); setting_mode_ = false; c->Release(); }
+    guard([&] { composer_->set_ascii(false); }); sync_input_mode();
 }
 void TextService::sync_input_mode() {
     if (!composer_) return;
@@ -215,6 +223,12 @@ void TextService::sync_input_mode() {
     if (mode_button_) mode_button_->update();
 }
 STDMETHODIMP TextService::OnChange(REFGUID g) {
+    if (g == GUID_COMPARTMENT_KEYBOARD_OPENCLOSE && !setting_mode_ && composer_) {      // Windows turned the input method off or on
+        if (!keyboard_open() && comp_ && comp_ctx_) { ITfContext* c = comp_ctx_; c->AddRef();   // off: what was being composed goes in first
+            run(c, [this, c](TfEditCookie ec) { host_->ec = ec; host_->ctx = c; composer_->focus_lost(); if (comp_) end_composition(ec); host_->ec = TF_INVALID_EDIT_COOKIE; host_->ctx = nullptr; }, false);
+            c->Release(); }
+        panel_.hide(); if (mode_button_) mode_button_->update(); return S_OK;
+    }
     if (g != GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION || setting_mode_ || !composer_) return S_OK;
     ITfCompartment* c = mode_compartment(); if (!c) return S_OK;
     VARIANT v; VariantInit(&v);
@@ -227,7 +241,8 @@ STDMETHODIMP TextService::Deactivate() {
     panel_.hide();
     if (mode_button_) { ITfLangBarItemMgr* lbm = nullptr; if (tm_ && SUCCEEDED(tm_->QueryInterface(IID_ITfLangBarItemMgr, (void**)&lbm))) { lbm->RemoveItem(mode_button_); lbm->Release(); }
         mode_button_->Release(); mode_button_ = nullptr; }
-    if (mode_sink_ != TF_INVALID_COOKIE) { if (ITfCompartment* c = mode_compartment()) { ITfSource* s = nullptr; if (SUCCEEDED(c->QueryInterface(IID_ITfSource, (void**)&s))) { s->UnadviseSink(mode_sink_); s->Release(); } c->Release(); } mode_sink_ = TF_INVALID_COOKIE; }
+    for (auto [g, cookie] : {std::pair<const GUID*, DWORD*>{&GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, &mode_sink_}, {&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, &openclose_sink_}})
+        if (*cookie != TF_INVALID_COOKIE) { if (ITfCompartment* c = compartment(*g)) { ITfSource* s = nullptr; if (SUCCEEDED(c->QueryInterface(IID_ITfSource, (void**)&s))) { s->UnadviseSink(*cookie); s->Release(); } c->Release(); } *cookie = TF_INVALID_COOKIE; }
     ITfSource* src = nullptr;
     if (tm_ && SUCCEEDED(tm_->QueryInterface(IID_ITfSource, (void**)&src))) {
         if (tm_sink_ != TF_INVALID_COOKIE) src->UnadviseSink(tm_sink_); if (focus_sink_ != TF_INVALID_COOKIE) src->UnadviseSink(focus_sink_); src->Release();
@@ -300,7 +315,8 @@ bool TextService::shift_up(ITfContext* ctx) {
     shift_held_ = false;
     const ULONGLONG held = GetTickCount64() - shift_down_at_;
     const bool tap = composer_ && composer_->settings().shift_toggle && !other_key_with_shift_ && held < 500 && GetKeyState(VK_CONTROL) >= 0 && GetKeyState(VK_MENU) >= 0 && GetKeyState(VK_LBUTTON) >= 0;
-    if (!tap || !composer_ || !keyboard_open()) return false;
+    if (!tap || !composer_) return false;
+    if (!keyboard_open()) { open_keyboard(); return true; }
     ITfContext* c = ctx ? ctx : comp_ctx_;
     if (c) { c->AddRef();
         run(c, [this, c](TfEditCookie ec) { host_->ec = ec; host_->ctx = c; composer_->shift_tapped(); after_edit(ec, c); sync_input_mode(); host_->ec = TF_INVALID_EDIT_COOKIE; host_->ctx = nullptr; }, false);
