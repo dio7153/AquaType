@@ -40,6 +40,11 @@ void load() {
     if (!avx2 && !has_sse41()) { err = "this CPU has neither AVX2 nor SSE4.1"; return; }
     const char* name = avx2 ? "aquadecoder_avx2.dll" : "aquadecoder_sse.dll";
     const std::wstring path = own_dir() + (avx2 ? L"aquadecoder_avx2.dll" : L"aquadecoder_sse.dll");
+    // OpenMP's idle workers spin by default.  On a machine whose cores are busy with other programs the spinning threads
+    // take the CPU from the one still working, and a keystroke's p95 went from 0.15 s to 8.8 s (4 cores, 2 busy
+    // programs).  Sleeping workers cost a few ms on an idle machine.  vcomp reads this when it loads, with the variant.
+    wchar_t wp[16];
+    if (!GetEnvironmentVariableW(L"OMP_WAIT_POLICY", wp, 16)) SetEnvironmentVariableW(L"OMP_WAIT_POLICY", L"PASSIVE");
     HMODULE h = LoadLibraryExW(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!h) { err = std::string("cannot load ") + name + " (error " + std::to_string(GetLastError()) + ")"; return; }
     bool ok = true;
