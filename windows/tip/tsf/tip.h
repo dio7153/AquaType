@@ -72,7 +72,6 @@ private:
     void sync_input_mode();                                          // the composer's mode -> the system's indicator
     void reload_settings();                                          // HKCU\Software\AquaType -> the composer and the panel
     void toggle_mode();                                              // the indicator's click, as a Shift tap
-    bool ctrl_space(WPARAM w);                                       // Ctrl+Space, when the setting is on
     void show_menu(POINT at);                                        // the indicator's right click
     ITfCompartment* mode_compartment();
     DWORD mode_sink_ = TF_INVALID_COOKIE; bool setting_mode_ = false;

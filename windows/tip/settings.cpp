@@ -16,7 +16,6 @@ void get_bool(const wchar_t* name, bool* b) { DWORD v; if (get(name, &v)) *b = v
 Settings Settings::load() {
     Settings s;
     get_bool(L"SentencePreedit", &s.sentence_preedit); get_bool(L"ShiftToggle", &s.shift_toggle); get_bool(L"CapsLockEnglish", &s.caps_english);
-    get_bool(L"CtrlSpaceToggle", &s.ctrl_space_toggle);
     get_bool(L"InitialSymbol", &s.initial_symbol); get_bool(L"BopomofoCandidate", &s.bopomofo_candidate);
     get_bool(L"FuzzyEnEng", &s.fuzzy_en_eng); get_bool(L"FuzzyAnAng", &s.fuzzy_an_ang); get_bool(L"FuzzyRetroflex", &s.fuzzy_retroflex);
     get_bool(L"LexiconPriority", &s.lexicon_priority);
@@ -30,7 +29,6 @@ bool Settings::save() const {
     bool ok = true;
     auto put = [&](const wchar_t* name, DWORD v) { ok = RegSetValueExW(k, name, 0, REG_DWORD, (const BYTE*)&v, sizeof v) == ERROR_SUCCESS && ok; };
     put(L"SentencePreedit", sentence_preedit); put(L"ShiftToggle", shift_toggle); put(L"CapsLockEnglish", caps_english);
-    put(L"CtrlSpaceToggle", ctrl_space_toggle);
     put(L"InitialSymbol", initial_symbol); put(L"BopomofoCandidate", bopomofo_candidate);
     put(L"FuzzyEnEng", fuzzy_en_eng); put(L"FuzzyAnAng", fuzzy_an_ang); put(L"FuzzyRetroflex", fuzzy_retroflex);
     put(L"LexiconPriority", lexicon_priority); put(L"CandidateSize", (DWORD)candidate_size);
