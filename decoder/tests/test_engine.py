@@ -76,6 +76,20 @@ def test_other_readings(tmp_path):
     plain, more = texts([]), texts(["--char-readings", str(REPO / "packaging/payload/rime/terra_pinyin.dict.yaml")])
     assert "蔚" not in plain and "蔚" in more and more.index("蔚") > more.index("鬻") and [t for t in more if t in plain] == plain
 
+@pytest.mark.skipif(os.name != "nt", reason="the Windows engine keeps the decoder's tier")
+def test_tier_is_kept(tmp_path, monkeypatch):
+    """A machine slow enough for the fast tier (here: any, AQ_TIER_SLOW_MS tiny) ends a sentence on it; the engine writes
+    it to the state folder, and the next engine starts on it without writing it again."""
+    common = ["--command", "serve-ui-jsonl", "--decoder-dir", str(DECODER), "--fallback-aqds", str(AQDS), "--fallback-manifest", str(AQDS) + ".manifest.json",
+              "--char-to-keys", str(REPO / "data/char_to_keys.json"), "--state-dir", str(tmp_path)]
+    monkeypatch.setenv("AQ_TIER_SLOW_MS", "0.001"); raw = "5j/ 2u6ru03g4jp6ej4"                                    # 中文輸入法, 18 keys
+    e = EngineProc(common)
+    for n in range(1, len(raw) + 1): e.send(request(raw[:n], n))
+    e.send(commit(raw, "中文輸入法", len(raw) + 1, "t1")); err = e.close()
+    assert (tmp_path / "tier").read_text().strip() == "fast" and "[engine] tier fast" in err
+    monkeypatch.delenv("AQ_TIER_SLOW_MS"); d = EngineProc(common); d.send(request("u", 1)); d.send(commit("u", "一", 2, "t2"))   # too few keys to switch back
+    assert "[engine] tier" not in d.close() and (tmp_path / "tier").read_text().strip() == "fast"   # had it not started fast, the commit would have written accurate
+
 def test_engine_char_coverage():
     r = subprocess.run([str(BIN), "--check-char-coverage", str(REPO / "data/char_to_keys.json")], capture_output=True, text=True, encoding="utf-8", timeout=300)
     assert r.returncode == 0 and json.loads(r.stdout.strip().splitlines()[-1])["missing"] == 0

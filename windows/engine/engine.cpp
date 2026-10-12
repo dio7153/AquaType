@@ -204,7 +204,19 @@ public:
         if (keys.empty()) return {}; char* out = aq_readings(handle, keys.c_str()); if (!out) return {};
         std::string s(out); aq_free(out); try { return json::parse(s).get<std::vector<int32_t>>(); } catch (...) { return {}; }
     }
-    void end_sentence() { aq_reset(handle); }
+    // The decoder picks its tier (fast / accurate) from how long keys take, between sentences.  The tier it ends on is kept
+    // in the state folder, so the next start begins on what this machine needed instead of measuring it again.
+    std::wstring tier_path; int saved_tier = -1;
+    void restore_tier(const std::wstring& path) {
+        tier_path = path;
+        try { const std::string s = read_file(path); if (s.rfind("fast", 0) == 0) saved_tier = 1; else if (s.rfind("accurate", 0) == 0) saved_tier = 0; } catch (...) {}
+        if (saved_tier >= 0) aq_set_tier(handle, saved_tier);
+    }
+    void keep_tier() {
+        const int t = aq_tier(handle); if (t == saved_tier || tier_path.empty()) return;
+        if (FILE* f = _wfopen(tier_path.c_str(), L"wb")) { std::fputs(t ? "fast\n" : "accurate\n", f); std::fclose(f); saved_tier = t; log(std::string("[engine] tier ") + (t ? "fast" : "accurate")); }
+    }
+    void end_sentence() { aq_reset(handle); keep_tier(); }
     int32_t char_id(const std::string& ch) { return aq_char_id(handle, ch.c_str()); }
 
     static std::string previous_sentence(const std::string& committed) {
@@ -482,7 +494,7 @@ static Engine make_engine(const Args& a) {
             catch (const std::exception& ex) { log(std::string("[engine] other readings not read: ") + ex.what()); }
         }
     }
-    if (const char* d = a.get("--decoder-dir")) { e.decoder = DecoderSession::open(d, a.get("--metallib")); if (e.decoder) e.decoder->warm_up(); }
+    if (const char* d = a.get("--decoder-dir")) { e.decoder = DecoderSession::open(d, a.get("--metallib")); if (e.decoder) { e.decoder->restore_tier(widen(state) + L"\\tier"); e.decoder->warm_up(); } }
     if (e.decoder) g_maintain = e.decoder->handle;
     if (const char* d = a.get("--decoder-dir")) { e.freq = std::make_unique<CharFrequency>(widen(d)); if (!e.freq->ok) e.freq.reset(); }
     if (!e.freq) log("[engine] no character frequency table; the third source falls back to code-point order");
