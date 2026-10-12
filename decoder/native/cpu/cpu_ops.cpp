@@ -187,7 +187,9 @@ static void block(const float* x, int K, const float* w, int i0, int i1, int j0,
 
 int num_threads() {
     static const int n = [] { const char* e = std::getenv("AQ_THREADS"); if (e && std::atoi(e) > 0) return std::atoi(e);
-        int hw = (int)std::thread::hardware_concurrency(); return std::max(1, std::min(8, hw / 2)); }();   // physical cores, at most 8: an input method shares the machine
+        // physical cores, at most 8: an input method shares the machine.  At least 2 where there are 2: on a dual-core
+        // laptop one thread left p50 at 180-270 ms against 125-155 with two, busy or not (workers sleep while they wait).
+        int hw = (int)std::thread::hardware_concurrency(); return std::max(std::min(2, std::max(1, hw)), std::min(8, hw / 2)); }();
     return n;
 }
 

@@ -65,6 +65,8 @@ char* aq_readings(aq_decoder* d, const char* keys) {
         return dup_js(js);
     } catch (const std::exception& e) { g_err = e.what(); return dup_js("[]"); }
 }
+int aq_tier(aq_decoder* d) { return d && d->v2->tier_fast() ? 1 : 0; }
+void aq_set_tier(aq_decoder* d, int fast) { if (d) d->v2->restore_tier(fast != 0); }
 void aq_free(char* p) { std::free(p); }
 const char* aq_last_error(void) { return g_err.c_str(); }
 const char* aq_version(void) { return DECODER_NATIVE_VERSION; }
