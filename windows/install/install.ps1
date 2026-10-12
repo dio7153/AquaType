@@ -19,7 +19,16 @@ foreach ($f in "$Target\AquaTypeTSF.dll", "$Target\x86\AquaTypeTSF.dll", "$Targe
     if (Test-Path $f) { try { Remove-Item $f -Force } catch { Rename-Item $f ((Split-Path $f -Leaf) + ".old-$stamp") } }
 }
 Get-ChildItem $Target -Recurse -Filter '*.old-*' -ErrorAction SilentlyContinue | ForEach-Object { try { Remove-Item $_.FullName -Force } catch {} }
-Copy-Item -Recurse -Force (Join-Path $src '*') $Target
+# Only what changed is copied: the model and the dictionary (~190 MB) are the same from one build to the next.  A file
+# counts as unchanged when its size and time match (Copy-Item keeps the source's time).
+Get-ChildItem $src -Recurse -File | ForEach-Object {
+    $to = Join-Path $Target $_.FullName.Substring($src.Length + 1)
+    $have = Get-Item -LiteralPath $to -ErrorAction SilentlyContinue
+    if (-not $have -or $have.Length -ne $_.Length -or $have.LastWriteTimeUtc -ne $_.LastWriteTimeUtc) {
+        New-Item -ItemType Directory -Force (Split-Path $to) | Out-Null
+        Copy-Item -LiteralPath $_.FullName $to -Force
+    }
+}
 
 $dll = "$Target\AquaTypeTSF.dll"; $dll32 = "$Target\x86\AquaTypeTSF.dll"
 $p = Start-Process -FilePath "$env:WINDIR\System32\regsvr32.exe" -ArgumentList "/s `"$dll`"" -Wait -PassThru -WindowStyle Hidden
