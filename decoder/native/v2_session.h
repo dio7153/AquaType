@@ -34,6 +34,11 @@ public:
     // The syllables a clean key string spells, or empty when it does not segment exactly.  The personal memory stores a
     // phrase by its reading, and a commit that did not come from a decoder row has no reading to read off.
     std::vector<int32_t> exact_readings(const std::string& keys) const;
+    // The speed tier, so the host can keep it across restarts: tier_fast() after a session, restore_tier() right after
+    // opening the next one (instead of re-learning it over the first 16 keys).  restore_tier does nothing when the tier is
+    // fixed (AQ_TIER=fast|accurate, AQ_BEAM_U, AQ_FINAL_U); auto mode goes on adjusting from there.
+    bool tier_fast() const { return tier_fast_; }
+    void restore_tier(bool fast) { if (tier_auto_) { set_tier(fast); key_ms_.clear(); } }
 private:
     std::vector<V2Candidate> decode_once(const std::string& keys, const std::vector<V2CtxToken>& ctx, V2Timing* timing);   // may throw V2Model::Overflow
     bool compact_for_window(int q0, int extra = 0);

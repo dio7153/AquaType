@@ -25,6 +25,7 @@ function(aq_decoder_lib name isa)
   target_compile_definitions(${name} PRIVATE AQ_CPU _CRT_SECURE_NO_WARNINGS DECODER_NATIVE_VERSION="${AQ_VERSION}-cpu+${AQ_DATE}")
   target_link_libraries(${name} PRIVATE OpenMP::OpenMP_CXX)
   if(MSVC)
+    set_property(TARGET ${name} PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")   # static CRT: only vcomp140 ships beside it
     target_compile_options(${name} PRIVATE /O2 /fp:precise /utf-8 /EHsc /W3 /wd4244 /wd4267 /wd4305)
     if(isa STREQUAL "avx2")
       target_compile_options(${name} PRIVATE /arch:AVX2)
@@ -44,12 +45,21 @@ if(WIN32)
   target_include_directories(aquadecoder PUBLIC ${NATIVE})
   add_dependencies(aquadecoder aquadecoder_avx2 aquadecoder_sse)
   if(MSVC)
+    set_property(TARGET aquadecoder PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
     target_compile_definitions(aquadecoder PRIVATE _CRT_SECURE_NO_WARNINGS)
     target_compile_options(aquadecoder PRIVATE /O2 /utf-8 /EHsc /W3)
   endif()
-  # the variants sit next to the dispatcher, wherever it is copied
+  # The variants need OpenMP's DLL, which has no static form: vcomp140.dll ships beside the decoder (app-local, from the
+  # toolset's x64 desktop redist; that build depends on KERNEL32 only - the onecore one would also want vcruntime140).
+  set(_redist "$ENV{VCToolsRedistDir}")
+  file(GLOB AQ_RUNTIME_DLLS "${_redist}x64/Microsoft.VC*.OpenMP/vcomp140.dll")
+  if(NOT AQ_RUNTIME_DLLS)
+    message(FATAL_ERROR "vcomp140.dll not found under VCToolsRedistDir='${_redist}' (configure from a vcvars64 shell)")
+  endif()
+  set(AQ_RUNTIME_DLLS ${AQ_RUNTIME_DLLS} CACHE INTERNAL "runtime DLLs shipped beside aquadecoder")
+  # the variants and the runtime sit next to the dispatcher, wherever it is copied
   add_custom_command(TARGET aquadecoder POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:aquadecoder_avx2> $<TARGET_FILE:aquadecoder_sse> $<TARGET_FILE_DIR:aquadecoder>)
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:aquadecoder_avx2> $<TARGET_FILE:aquadecoder_sse> ${AQ_RUNTIME_DLLS} $<TARGET_FILE_DIR:aquadecoder>)
 else()
   aq_decoder_lib(aquadecoder avx2)
 endif()
@@ -57,6 +67,7 @@ endif()
 add_executable(aq_check aq_check.cpp)
 target_link_libraries(aq_check PRIVATE aquadecoder)
 if(MSVC)
+  set_property(TARGET aq_check PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")   # runs from a folder with no VC runtime installed
   target_compile_options(aq_check PRIVATE /O2 /utf-8 /EHsc)
 endif()
 
