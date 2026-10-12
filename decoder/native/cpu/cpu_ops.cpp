@@ -265,7 +265,7 @@ void gemm_packed(const float* x, int n, const Packed& W, float* y, const float* 
     auto tile = [&](int t) { const int p = t / nrb, rb = t % nrb, j0 = p * NR;
         panel_rows(x, K, W.p.data() + (size_t)p * K * NR, rb * RB, std::min(n, (rb + 1) * RB), j0, std::min(NR, m - j0), y, m, bias ? bias + j0 : nullptr, acc); };
     if ((long long)n * m * K < 400000) { for (int t = 0; t < tiles; t++) tile(t); return; }
-    #pragma omp parallel for schedule(static) num_threads(num_threads())
+    #pragma omp parallel for schedule(dynamic) num_threads(num_threads())
     for (int t = 0; t < tiles; t++) tile(t);
 }
 
@@ -328,8 +328,9 @@ template <int R> static inline void q4_row(const uint8_t* w, const float* s, con
 static bool q8_on() { static const bool on = [] { const char* e = std::getenv("AQ_Q8"); return !(e && std::string(e) == "0"); }(); return on; }
 static void gemm_q4q8(const float* x, int n, const QWeight& W, float* y, const float* bias, const std::vector<int32_t>* rows) {
     const int m = rows ? (int)rows->size() : W.out, K = W.in, ng = K / QG;
+    // dynamic: a worker the OS has preempted holds up a static share; with chunks of 8 rows the others take it over
     thread_local XQ tls; quant_x(x, n, K, tls); const XQ* xp = &tls;   // the caller's copy: inside the loop tls would name each worker's own
-    #pragma omp parallel for schedule(static) num_threads(num_threads()) if ((long long)m * n * K > 400000)
+    #pragma omp parallel for schedule(dynamic, 8) num_threads(num_threads()) if ((long long)m * n * K > 400000)
     for (int j = 0; j < m; j++) {
         const XQ& X = *xp; const int wr = rows ? (*rows)[j] : j; const uint8_t* w = (const uint8_t*)(W.q + (size_t)wr * (K / 8));
         const float* s = W.scales.data() + (size_t)wr * ng; const float* b = W.biases.data() + (size_t)wr * ng; const float bj = bias ? bias[wr] : 0.0f;
@@ -384,7 +385,7 @@ template <int R> static inline void i8_row(const int8_t* w, const float* s, cons
 void gemm_i8(const float* x, int n, const I8Weight& W, float* y, const float* bias, bool acc) {
     const int m = W.out, K = W.in, ng = K / QG; if (n <= 0 || m <= 0) return;
     thread_local XQ tls; quant_x(x, n, K, tls, true); const XQ* xp = &tls;
-    #pragma omp parallel for schedule(static) num_threads(num_threads()) if ((long long)m * n * K > 400000)
+    #pragma omp parallel for schedule(dynamic, 8) num_threads(num_threads()) if ((long long)m * n * K > 400000)
     for (int j = 0; j < m; j++) {
         const XQ& X = *xp; const int8_t* w = W.q.data() + (size_t)j * K; const float* s = W.scales.data() + (size_t)j * ng; const float bj = bias ? bias[j] : 0.0f;
         float t[4]; int r = 0;
