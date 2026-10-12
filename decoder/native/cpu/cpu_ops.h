@@ -1,6 +1,7 @@
 // The CPU backend's building blocks: a safetensors reader, a small host array that stands in for the few MLX calls the
 // session makes (AQ_CPU builds), fp16 conversion, and the kernels the two models need - fp32 GEMM, GEMM against MLX's
-// 4-bit affine-quantised weights, layer norm, GELU, exp - on AVX2/FMA with OpenMP threads.
+// 4-bit affine-quantised weights, layer norm, GELU, exp - on AVX2/FMA, or SSE4.1 in the build for older CPUs
+// (aq_dispatch.cpp), with OpenMP threads.
 #pragma once
 #include <cstdint>
 #include <cstring>
@@ -66,6 +67,11 @@ Packed pack_nt(const float* w, int m, int K);
 void gemm_packed(const float* x, int n, const Packed& w, float* y, const float* bias = nullptr, bool accumulate = false);
 // the same against a quantised weight; rows (optional) picks the weight rows to use, giving y[n, rows.size()]
 void gemm_q(const float* x, int n, const QWeight& w, float* y, const float* bias = nullptr, const std::vector<int32_t>* rows = nullptr);
+// an int8 copy of an fp32 weight [m, K]: symmetric per group of 64 along K (w ~ q * scale), K a multiple of 64.
+// gemm_i8 quantises x the same way and multiplies on integers (maddubs); y as gemm_packed.
+struct I8Weight { int out = 0, in = 0; std::vector<int8_t> q; std::vector<float> scales; };
+I8Weight quant_weight_i8(const float* w, int m, int K);
+void gemm_i8(const float* x, int n, const I8Weight& w, float* y, const float* bias = nullptr, bool accumulate = false);
 void layer_norm(const float* x, int n, int d, const float* g, const float* b, float eps, float* y);
 void gelu_inplace(float* x, size_t n);           // 0.5 x (1 + erf(x / sqrt 2)), MLX's erf polynomial
 float logsumexp_row(const float* x, int n);

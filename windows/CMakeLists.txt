@@ -25,7 +25,10 @@ if(MSVC)
 endif()
 # No console window: the text service and the logon entry start it in the background.  Pipes still work for stdio mode (tests).
 target_link_options(AquaTypeEngine PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
-add_custom_command(TARGET AquaTypeEngine POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:aquadecoder> $<TARGET_FILE_DIR:AquaTypeEngine>)
+# the dispatcher and both builds it picks from, next to the engine: a target of its own, so a rebuilt decoder is copied
+# even when the engine itself did not relink
+add_custom_target(aq_decoder_copy ALL COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:aquadecoder>
+  $<TARGET_FILE:aquadecoder_avx2> $<TARGET_FILE:aquadecoder_sse> $<TARGET_FILE_DIR:AquaTypeEngine> DEPENDS aquadecoder)
 endif()
 
 # the text service's core, without TSF, and its test against the real engine

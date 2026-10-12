@@ -94,11 +94,19 @@ V2Session::V2Session(const std::string& dir) {
 #ifdef AQ_CPU
     // The beam widths were chosen against the GPU's cost per row; on the CPU every row is a full forward pass, so the
     // widths can be narrowed for latency (AQ_BEAM_U: rows expanded per position, AQ_FINAL_U: the last position's pool).
-    // Defaults 96 / 256: on 117 everyday sentences typed with 0, 10 and 20% simulated errors they rank exactly as the
-    // shipped widths (160 / 1024) do, at roughly 60% of the per-key time (tools/aquatype-eval in the porting notes).
-    b_.U = std::min(b_.U, 96); final_u_ = 256;
-    if (const char* e = std::getenv("AQ_BEAM_U")) if (std::atoi(e) > 0) b_.U = std::atoi(e);
-    if (const char* e = std::getenv("AQ_FINAL_U")) if (std::atoi(e) > 0) final_u_ = std::atoi(e);
+    // Defaults 64 / 192: on the evaluation sets (117 everyday sentences clean, with 10% key errors and with merged
+    // pronunciations; confusable words; short words) they rank as 96 / 256 does, first place equal or better, at about
+    // two thirds of the per-key work.  48 / 128 is faster again but loses a few third places with key errors.
+    // A slow machine trades those third places for speed on its own (set_tier, note_key_ms).
+    const char* tier = std::getenv("AQ_TIER");
+    tier_auto_ = !tier || !*tier || std::string(tier) == "auto";
+    set_tier(tier && std::string(tier) == "fast");
+    // back to accurate well below the switch point: fast costs ~0.8 of accurate, so the gap keeps it from flapping
+    if (const char* e = std::getenv("AQ_TIER_SLOW_MS")) if (std::atof(e) > 0) { tier_slow_ms_ = std::atof(e); tier_fast_ms_ = tier_slow_ms_ * 0.45; }
+    if (const char* e = std::getenv("AQ_BEAM_U")) if (std::atoi(e) > 0) { b_.U = std::atoi(e); tier_auto_ = false; }
+    if (const char* e = std::getenv("AQ_FINAL_U")) if (std::atoi(e) > 0) { final_u_ = std::atoi(e); tier_auto_ = false; }
+    // the syllable pass costs in proportion to the keys it sees (syl_ctx_ of them before the re-walked region)
+    if (const char* e = std::getenv("AQ_SYL_CTX")) if (std::atoi(e) > 0) syl_ctx_ = std::atoi(e);
 #endif
     clear_cache(); host_release_free_pages();
 }
@@ -112,7 +120,14 @@ void V2Session::reset() {
     std::unordered_map<uint64_t, Hidden>().swap(lm_hidden_);
     std::vector<uint16_t>().swap(hid_arena_); std::vector<uint16_t>().swap(hid_arena_alt_);
     clear_cache(); host_release_free_pages();
+    if (tier_auto_ && key_ms_.size() >= 16) {                 // between sentences: the only time the widths may change
+        std::vector<float> s = key_ms_; std::nth_element(s.begin(), s.begin() + s.size() / 2, s.end()); const double med = s[s.size() / 2];
+        if (!tier_fast_ && med > tier_slow_ms_) { set_tier(true); key_ms_.clear(); }
+        else if (tier_fast_ && med < tier_fast_ms_) { set_tier(false); key_ms_.clear(); }
+    }
 }
+void V2Session::set_tier(bool fast) { tier_fast_ = fast; b_.U = fast ? 48 : 64; final_u_ = fast ? 128 : 192; }
+void V2Session::note_key_ms(double ms) { key_ms_.push_back((float)ms); if (key_ms_.size() > 32) key_ms_.erase(key_ms_.begin()); }
 std::vector<int32_t> V2Session::exact_readings(const std::string& keys) const {
     const std::vector<int32_t> k = encode_keys(keys);
     const int n = (int)k.size();
@@ -447,11 +462,11 @@ std::string V2Session::decode_json(const std::string& keys, const std::string& c
         if (w != std::string::npos && w < end) for (double x : nums(w)) t.weights.push_back((float)x);
         if (end == std::string::npos) break;                                // a token cut short: the rest is not context
         ctx.push_back(t); p = end + 1; }
-    V2Timing T; auto cands = decode(keys, ctx, &T);
+    V2Timing T; auto cands = decode(keys, ctx, &T); note_key_ms(T.total_ms);
     std::ostringstream o; o << "{\"candidates\":[";
     for (size_t i = 0; i < cands.size(); i++) { const auto& c = cands[i]; if (i) o << ","; o << "{\"text\":\"" << v2_json_escape(c.text) << "\",\"score\":" << c.score << ",\"fit_total\":0,\"char_ends\":[";
         for (size_t j = 0; j < c.char_ends.size(); j++) { if (j) o << ","; o << c.char_ends[j]; } o << "],\"reading\":["; for (size_t j = 0; j < c.reading.size(); j++) { if (j) o << ","; o << c.reading[j]; } o << "],\"prefix\":\"" << v2_json_escape(c.prefix) << "\"}"; }
-    o << "],\"prof\":{\"lm_build_ms\":" << model_->prof_build_ms << ",\"lm_eval_ms\":" << model_->prof_eval_ms << ",\"lm_steps\":" << model_->prof_steps << ",\"lm_host_ms\":" << T.lm_host_ms << "},\"timing_ms\":{\"enumerate\":" << T.enumerate_ms << ",\"syllable\":" << T.syllable_ms << ",\"spans\":" << T.spans_ms << ",\"prune\":" << T.prune_ms << ",\"lm\":" << T.lm_ms << ",\"beam\":" << T.beam_ms << ",\"finish\":" << T.finish_ms << ",\"total\":" << T.total_ms << "},\"counts\":{\"arcs\":" << T.n_arcs << ",\"kept\":" << T.n_kept << ",\"steps\":" << T.n_steps << ",\"nodes\":" << T.n_nodes << ",\"lm_cached\":" << T.n_lm_cached << ",\"lm_computed\":" << T.n_lm_computed << ",\"slots_used\":" << T.n_slots_used << ",\"resets\":" << T.n_resets << ",\"frozen_positions\":" << T.n_frozen_positions << ",\"compacted\":" << T.n_compacted << ",\"cache_reset\":" << T.n_cache_reset << ",\"overflowed\":" << T.overflowed << "}}";
+    o << "],\"prof\":{\"lm_build_ms\":" << model_->prof_build_ms << ",\"lm_eval_ms\":" << model_->prof_eval_ms << ",\"lm_steps\":" << model_->prof_steps << ",\"lm_host_ms\":" << T.lm_host_ms << ",\"tier\":\"" << (tier_fast_ ? "fast" : "accurate") << "\"},\"timing_ms\":{\"enumerate\":" << T.enumerate_ms << ",\"syllable\":" << T.syllable_ms << ",\"spans\":" << T.spans_ms << ",\"prune\":" << T.prune_ms << ",\"lm\":" << T.lm_ms << ",\"beam\":" << T.beam_ms << ",\"finish\":" << T.finish_ms << ",\"total\":" << T.total_ms << "},\"counts\":{\"arcs\":" << T.n_arcs << ",\"kept\":" << T.n_kept << ",\"steps\":" << T.n_steps << ",\"nodes\":" << T.n_nodes << ",\"lm_cached\":" << T.n_lm_cached << ",\"lm_computed\":" << T.n_lm_computed << ",\"slots_used\":" << T.n_slots_used << ",\"resets\":" << T.n_resets << ",\"frozen_positions\":" << T.n_frozen_positions << ",\"compacted\":" << T.n_compacted << ",\"cache_reset\":" << T.n_cache_reset << ",\"overflowed\":" << T.overflowed << "}}";
     return o.str();
 }
 }  // namespace aq

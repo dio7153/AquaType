@@ -42,8 +42,9 @@ char* aq_decode(aq_decoder* d, const char* keys, const char* ctx_json) {
         static const bool log_ms = std::getenv("AQ_LOG_MS") != nullptr;
         if (log_ms) {
             auto num = [&](const char* k) { size_t q = js.find(k); return q == std::string::npos ? -1.0 : std::atof(js.c_str() + q + std::strlen(k)); };
-            std::fprintf(stderr, "[aq] keys %zu total %.1f syl %.1f lm %.1f beam %.1f spans %.1f prune %.1f\n", std::strlen(keys ? keys : ""),
-                         num("\"total\":"), num("\"syllable\":"), num("\"lm\":"), num("\"beam\":"), num("\"spans\":"), num("\"prune\":"));
+            std::fprintf(stderr, "[aq] keys %zu total %.1f syl %.1f lm %.1f beam %.1f spans %.1f prune %.1f%s\n", std::strlen(keys ? keys : ""),
+                         num("\"total\":"), num("\"syllable\":"), num("\"lm\":"), num("\"beam\":"), num("\"spans\":"), num("\"prune\":"),
+                         js.find("\"tier\":\"fast\"") != std::string::npos ? " fast" : "");
         }
         return dup_js(js);
     } catch (const std::exception& e) { g_err = e.what(); return nullptr; }
