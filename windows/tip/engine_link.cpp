@@ -31,9 +31,10 @@ PipeEngine::PipeEngine(std::wstring pipe, EngineLaunch launch) : pipe_name_(std:
 // the read only completes when the engine answers the request that write is carrying.
 PipeEngine::~PipeEngine() {
     HANDLE p; { std::lock_guard<std::mutex> g(m_); p = pipe_; pipe_ = INVALID_HANDLE_VALUE; notify_hwnd_ = nullptr; closing_ = true; }
-    if (p != INVALID_HANDLE_VALUE) CancelIoEx(p, nullptr);
+    SetEvent(stop_);
     if (reader_.joinable()) reader_.join();
     if (p != INVALID_HANDLE_VALUE) CloseHandle(p);
+    CloseHandle(stop_);
 }
 bool PipeEngine::connect(uint32_t wait_ms) {
     if (pipe_ != INVALID_HANDLE_VALUE) return true;
@@ -45,6 +46,7 @@ bool PipeEngine::connect(uint32_t wait_ms) {
         HANDLE h = CreateFileW(pipe_name_.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
         if (h != INVALID_HANDLE_VALUE) {
             if (reader_.joinable()) reader_.join();                              // the previous connection's reader has ended with it
+            ResetEvent(stop_);
             { std::lock_guard<std::mutex> g(m_); pipe_ = h; }
             reader_ = std::thread(&PipeEngine::reader, this, h); return true;
         }
@@ -66,10 +68,14 @@ bool PipeEngine::connect(uint32_t wait_ms) {
 void PipeEngine::reader(HANDLE pipe) {
     std::string pending; char buf[16384]; DWORD got = 0;
     OVERLAPPED ov{}; ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    // Stopping waits on an event rather than cancelling from outside: a cancel sent while no read is pending (a reply
+    // being handled) would be lost, and the next read would then wait forever.
+    const HANDLE wait[2] = {ov.hEvent, stop_};
     while (true) {
         ResetEvent(ov.hEvent);
         if (!ReadFile(pipe, buf, sizeof buf, nullptr, &ov) && GetLastError() != ERROR_IO_PENDING) break;
-        if (!GetOverlappedResult(pipe, &ov, &got, TRUE) || got == 0) break;
+        if (WaitForMultipleObjects(2, wait, FALSE, INFINITE) != WAIT_OBJECT_0) { CancelIoEx(pipe, &ov); GetOverlappedResult(pipe, &ov, &got, TRUE); break; }
+        if (!GetOverlappedResult(pipe, &ov, &got, FALSE) || got == 0) break;
         pending.append(buf, got); size_t nl; bool any = false;
         { std::lock_guard<std::mutex> g(m_);
           while ((nl = pending.find('\n')) != std::string::npos) { lines_.push_back(pending.substr(0, nl)); pending.erase(0, nl + 1); any = true; }
@@ -91,7 +97,7 @@ bool PipeEngine::send(const std::string& line) {
     bool ok = WriteFile(p, line.data(), (DWORD)line.size(), nullptr, &ov) || GetLastError() == ERROR_IO_PENDING;
     if (ok) { if (WaitForSingleObject(ov.hEvent, 2000) != WAIT_OBJECT_0) { CancelIoEx(p, &ov); ok = false; } GetOverlappedResult(p, &ov, &w, TRUE); }
     CloseHandle(ov.hEvent);
-    if (!ok || w != line.size()) { std::lock_guard<std::mutex> g(m_); if (pipe_ == p) { pipe_ = INVALID_HANDLE_VALUE; CancelIoEx(p, nullptr); } return false; }   // the reader ends and closes it
+    if (!ok || w != line.size()) { std::lock_guard<std::mutex> g(m_); if (pipe_ == p) { pipe_ = INVALID_HANDLE_VALUE; SetEvent(stop_); } return false; }   // the reader ends and closes it
     return true;
 }
 bool PipeEngine::next_line(std::string* line, uint32_t wait_ms) {

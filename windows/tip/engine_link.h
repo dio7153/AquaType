@@ -33,6 +33,7 @@ private:
     std::wstring pipe_name_; EngineLaunch launch_;
     std::mutex m_; std::condition_variable cv_; std::deque<std::string> lines_;
     HANDLE pipe_ = INVALID_HANDLE_VALUE; std::thread reader_;
+    HANDLE stop_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);   // set: the reader cancels its read and ends
     HWND notify_hwnd_ = nullptr; UINT notify_msg_ = 0;
     ULONGLONG last_launch_ = 0, last_failed_ = 0; bool closing_ = false;
 };
