@@ -17,6 +17,8 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <thread>
 #include <optional>
@@ -181,6 +183,7 @@ const std::map<char, std::vector<char>>& neighbours() {
 }  // namespace bopomofo
 
 // ---------------------------------------------------------------- the decoder session
+static bool g_decode_aborted = false;   // the last aq_decode was stopped by aq_abort (only the dispatcher's worker decodes)
 class DecoderSession {
 public:
     aq_decoder* handle = nullptr; std::vector<std::string> syllable_keys;
@@ -196,7 +199,9 @@ public:
         char* out = aq_decode(handle, raw.c_str(), ctx.empty() ? nullptr : ctx.c_str());
         if (!out) { log(std::string("[engine] aq_decode failed: ") + aq_last_error()); return std::nullopt; }
         std::string s(out); aq_free(out);
-        try { json p = json::parse(s); if (p.contains("candidates") && p["candidates"].is_array()) return p["candidates"]; } catch (...) {}
+        try { json p = json::parse(s);
+              if (p.value("aborted", false)) { g_decode_aborted = true; return std::nullopt; }   // newer keys came: nobody wants this answer
+              if (p.contains("candidates") && p["candidates"].is_array()) return p["candidates"]; } catch (...) {}
         log("[engine] compose JSON unexpected: " + std::to_string(s.size()) + " bytes"); return std::nullopt;
     }
     int candidate_budget() const { return 63; }
@@ -432,9 +437,46 @@ static std::optional<ojson> handle_line(Engine& engine, const std::string& line)
     }
 }
 
+// ---- one worker answers every line, from every connection, in order.  The decoder is single-threaded, so a request
+// that arrives while the same client's previous one is still decoding stops that one (aq_abort: the decoder halts at its
+// next step and its answer is dropped), and a request with a newer one from the same client already waiting is skipped:
+// the person stopped typing on the newest keys, and that answer should not wait behind answers nobody will look at.
+// Commits and other lines are never skipped.  The between-keystroke housekeeping runs after each answer is written.
+class Dispatcher {
+public:
+    using Reply = std::function<void(const std::string&)>;
+    explicit Dispatcher(Engine& e) : engine_(e) {}
+    void push(std::string line, Reply reply) {
+        std::string client; bool request = false;
+        try { const json j = json::parse(line); request = j.value("schema", std::string()) == contract::request_schema; client = j.value("client_id", std::string()); } catch (...) {}
+        std::lock_guard<std::mutex> g(m_);
+        if (request && running_request_ && running_client_ == client && engine_.decoder) aq_abort(engine_.decoder->handle);
+        q_.push_back({std::move(line), std::move(reply), std::move(client), request}); cv_.notify_one();
+    }
+    void run() {                                   // the worker; returns once stopped and drained
+        for (;;) {
+            Job job;
+            {   std::unique_lock<std::mutex> l(m_); cv_.wait(l, [&] { return !q_.empty() || stop_; }); if (q_.empty()) return;
+                job = std::move(q_.front()); q_.pop_front();
+                if (job.request && std::any_of(q_.begin(), q_.end(), [&](const Job& o) { return o.request && o.client == job.client; })) continue;
+                running_request_ = job.request; running_client_ = job.client; }
+            g_decode_aborted = false; std::optional<ojson> reply = handle_line(engine_, job.line); const bool aborted = g_decode_aborted;
+            { std::lock_guard<std::mutex> g(m_); running_request_ = false; running_client_.clear(); }
+            if (reply && !aborted) { try { job.reply(reply->dump() + "\n"); } catch (...) {} }
+            if (!aborted && g_maintain) aq_maintain(g_maintain);
+        }
+    }
+    void stop() { std::lock_guard<std::mutex> g(m_); stop_ = true; cv_.notify_all(); }
+private:
+    struct Job { std::string line; Reply reply; std::string client; bool request = false; };
+    Engine& engine_; std::mutex m_; std::condition_variable cv_; std::deque<Job> q_;
+    bool stop_ = false, running_request_ = false; std::string running_client_;
+};
+
 // ---- serve-pipe: one engine for every input method instance of this user.  Each app that loads the text service
-// connects to the pipe; requests from all of them are answered one at a time (the decoder is single-threaded), each on
-// the connection it came in on, and the between-keystroke housekeeping runs after the reply is written.
+// connects to the pipe; a thread per connection reads its lines into the dispatcher, whose worker writes each answer
+// back on the connection it came in on.  Reads and writes of one connection run on different threads, so the pipe is
+// overlapped: a synchronous handle would hold the answer's write behind the pending read.
 static std::wstring default_pipe_name() {
     wchar_t user[256]; DWORD n = 256; if (!GetUserNameW(user, &n)) wcscpy_s(user, L"user");
     return std::wstring(L"\\\\.\\pipe\\AquaTypeEngine-") + user;
@@ -451,31 +493,46 @@ static bool pipe_security(SECURITY_ATTRIBUTES* sa) {
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &sd, nullptr)) return false;
     sa->nLength = sizeof(*sa); sa->lpSecurityDescriptor = sd; sa->bInheritHandle = FALSE; return true;   // kept for the life of the process
 }
+// One overlapped read (op 0), write (1) or connect (2), waited for.
+static bool pipe_io(HANDLE p, int op, void* buf, DWORD n, DWORD* done) {
+    OVERLAPPED ov{}; ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr); if (!ov.hEvent) return false;
+    DWORD got = 0; BOOL ok = op == 0 ? ReadFile(p, buf, n, nullptr, &ov) : op == 1 ? WriteFile(p, buf, n, nullptr, &ov) : ConnectNamedPipe(p, &ov);
+    const DWORD e = ok ? ERROR_SUCCESS : GetLastError();
+    if (!ok && op == 2 && e == ERROR_PIPE_CONNECTED) ok = TRUE;
+    else if (!ok && e == ERROR_IO_PENDING) ok = GetOverlappedResult(p, &ov, &got, TRUE);
+    else if (ok) GetOverlappedResult(p, &ov, &got, TRUE);
+    CloseHandle(ov.hEvent); if (done) *done = got; return ok != FALSE;
+}
+struct PipeConnection {                            // closed once neither its reader nor a pending answer holds it
+    HANDLE p; std::mutex write_lock;
+    explicit PipeConnection(HANDLE h) : p(h) {}
+    ~PipeConnection() { DisconnectNamedPipe(p); CloseHandle(p); }
+    void write(const std::string& s) { std::lock_guard<std::mutex> g(write_lock); DWORD w = 0; pipe_io(p, 1, (void*)s.data(), (DWORD)s.size(), &w); }
+};
 static int serve_pipe(Engine& engine, const std::wstring& name) {
     SECURITY_ATTRIBUTES sa{}; const bool secured = pipe_security(&sa);
-    std::mutex lock; bool first = true;
+    Dispatcher dispatcher(engine); std::thread worker([&] { dispatcher.run(); });
+    bool first = true;
     while (true) {
-        HANDLE p = CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX | (first ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0), PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+        HANDLE p = CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | (first ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0), PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
                                     PIPE_UNLIMITED_INSTANCES, 1 << 16, 1 << 16, 0, secured ? &sa : nullptr);
         if (p == INVALID_HANDLE_VALUE) {
-            if (first && GetLastError() == ERROR_ACCESS_DENIED) { log("[engine] another engine already serves " + narrow(name)); return 0; }
+            if (first && GetLastError() == ERROR_ACCESS_DENIED) { log("[engine] another engine already serves " + narrow(name)); dispatcher.stop(); worker.join(); return 0; }
             log("[engine] cannot create pipe (error " + std::to_string(GetLastError()) + ")"); Sleep(1000); continue;
         }
         if (first) { log("[engine] serving " + narrow(name)); first = false; }
-        if (!ConnectNamedPipe(p, nullptr) && GetLastError() != ERROR_PIPE_CONNECTED) { CloseHandle(p); continue; }
-        std::thread([&engine, &lock, p] {
+        if (!pipe_io(p, 2, nullptr, 0, nullptr)) { CloseHandle(p); continue; }
+        auto conn = std::make_shared<PipeConnection>(p);
+        std::thread([&dispatcher, conn] {
             std::string pending; char buf[8192]; DWORD got = 0;
-            while (ReadFile(p, buf, sizeof buf, &got, nullptr) && got > 0) {
+            while (pipe_io(conn->p, 0, buf, sizeof buf, &got) && got > 0) {
                 pending.append(buf, got); size_t nl;
                 while ((nl = pending.find('\n')) != std::string::npos) {
                     std::string line = pending.substr(0, nl); pending.erase(0, nl + 1);
                     if (!line.empty() && line.back() == '\r') line.pop_back(); if (line.empty()) continue;
-                    std::optional<ojson> reply; { std::lock_guard<std::mutex> g(lock); reply = handle_line(engine, line); }
-                    if (reply) { std::string s = reply->dump() + "\n"; DWORD w = 0; if (!WriteFile(p, s.data(), (DWORD)s.size(), &w, nullptr)) break; }
-                    std::lock_guard<std::mutex> g(lock); if (g_maintain) aq_maintain(g_maintain);
+                    dispatcher.push(std::move(line), [conn](const std::string& s) { conn->write(s); });
                 }
             }
-            DisconnectNamedPipe(p); CloseHandle(p);
         }).detach();
     }
 }
@@ -524,12 +581,16 @@ static int run(int argc, char** argv) {
     // The engine answers a user who is waiting: above-normal priority, the counterpart of the Mac engine's user-interactive QoS.
     SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
     if (command == "serve-pipe") return serve_pipe(engine, a.get("--pipe") ? widen(a.get("--pipe")) : default_pipe_name());
+    // serve-ui-jsonl: lines on stdin, answers on stdout, through the same dispatcher as the pipe
+    Dispatcher dispatcher(engine); std::thread worker([&] { dispatcher.run(); });
     std::string line;
     while (std::getline(std::cin, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
-        if (auto reply = handle_line(engine, line)) { try { emit(*reply); } catch (...) {} }
-    }    return 0;
+        dispatcher.push(std::move(line), [](const std::string& s) { std::fwrite(s.data(), 1, s.size(), stdout); std::fflush(stdout); });
+    }
+    dispatcher.stop(); worker.join();
+    return 0;
 }
 
 int main(int argc, char** argv) {

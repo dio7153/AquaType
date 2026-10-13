@@ -90,6 +90,25 @@ def test_tier_is_kept(tmp_path, monkeypatch):
     monkeypatch.delenv("AQ_TIER_SLOW_MS"); d = EngineProc(common); d.send(request("u", 1)); d.send(commit("u", "一", 2, "t2"))   # too few keys to switch back
     assert "[engine] tier" not in d.close() and (tmp_path / "tier").read_text().strip() == "fast"   # had it not started fast, the commit would have written accurate
 
+@pytest.mark.skipif(os.name != "nt", reason="the Windows engine's dispatcher")
+def test_newer_keys_stop_the_stale_answer(tmp_path):
+    """Keys sent while the same client's answer is still decoding: the stale one is stopped or skipped and never answered,
+    and the answer for the newest keys is the one a lone request gets.  Commits are never dropped."""
+    common = ["--command", "serve-ui-jsonl", "--decoder-dir", str(DECODER), "--fallback-aqds", str(AQDS), "--fallback-manifest", str(AQDS) + ".manifest.json",
+              "--char-to-keys", str(REPO / "data/char_to_keys.json"), "--state-dir", str(tmp_path)]
+    raw = "ji3ap7au/6wu0 vu84j3d9 cjo4"                                                                          # 我們明天下午開會
+    e = EngineProc(common); e.send(request("u", 1)); e.send(commit("u", "一", 2, "warm"))                        # warmed up, sentence ended
+    alone = [c["text_utf8"] for c in e.send(request(raw, 3))["candidates"]]
+    for n in range(1, len(raw) + 1): e.raw(json.dumps(request(raw[:n], 10 + n)))                                 # typed faster than it decodes
+    e.raw(json.dumps(commit(raw, "我們明天下午開會", 100, "c2")))
+    replies = []
+    while not any(r.get("event_id") == "c2" for r in replies): replies.append(json.loads(e.lines.get(timeout=120)))
+    answers = [r for r in replies if r["schema"] == "aquatype-ui-fallback-response/v1"]
+    assert answers and answers[-1]["raw_keys"] == raw and len(answers) < len(raw)                                # stale ones were not all answered
+    assert answers[-1]["candidates"][0]["text_utf8"] == alone[0]                                                 # skipping keys may reorder near ties, not the first
+    assert "c2" in [r.get("event_id") for r in replies]
+    e.close()
+
 def test_engine_char_coverage():
     r = subprocess.run([str(BIN), "--check-char-coverage", str(REPO / "data/char_to_keys.json")], capture_output=True, text=True, encoding="utf-8", timeout=300)
     assert r.returncode == 0 and json.loads(r.stdout.strip().splitlines()[-1])["missing"] == 0

@@ -252,7 +252,8 @@ void Composer::set_raw(const std::string& raw, bool preserve_panel) {
 // ---------------------------------------------------------------- the engine
 void Composer::request(const std::string& raw) {
     if (in_flight_ && GetTickCount64() - in_flight_at_ > reply_timeout_ms(in_flight_raw_.size())) { in_flight_ = false; engine_unavailable_ = true; }   // a reply that never came
-    if (in_flight_) { queued_raw_ = raw; return; }
+    // Keys typed while an answer is out go at once: the engine stops decoding the older keys of this client (the decoder
+    // halts at its next step) and answers only the newest, so the answer when typing stops does not wait behind a stale one.
     send_request(raw);
 }
 
