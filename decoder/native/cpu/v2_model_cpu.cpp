@@ -117,6 +117,7 @@ array V2Model::syl_hidden(const std::vector<int32_t>& key_ids) const {
         for (int c = 0; c < d; c++) x[(size_t)i * d + c] = key_emb_[(size_t)id * d + c] + syl_pos_[(size_t)i * d + c] + tok0_[c]; }
     layer_norm(x.data(), L, d, emb_lng_.data(), emb_lnb_.data(), cfg_.syl_eps, x.data());
     for (const SylLayer& P : syl_) {
+        if (stop && stop->load(std::memory_order_relaxed)) return array(Dtype::f32, {0, d});
         apply(P.q, x.data(), L, q.data()); apply(P.k, x.data(), L, k.data()); apply(P.v, x.data(), L, v.data());
         full_attention(q.data(), k.data(), v.data(), L, h, hd, a.data());
         apply(P.o, a.data(), L, t.data()); for (size_t i = 0; i < x.size(); i++) t[i] += x[i];

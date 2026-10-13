@@ -39,10 +39,12 @@ public:
     // opening the next one (instead of re-learning it over the first 16 keys).  restore_tier does nothing when the tier is
     // fixed (AQ_TIER=fast|accurate, AQ_BEAM_U, AQ_FINAL_U); auto mode goes on adjusting from there.
     // Cooperative abort, from another thread: the host has newer keys for this session, so the decode in progress is
-    // stale.  It stops at the next step boundary (after the syllable pass, or between beam positions) and decode_json
+    // stale.  It stops at the next step boundary (between the syllable pass's layers on the CPU, after that pass, or
+    // between beam positions) and decode_json
     // returns {"aborted":true,"candidates":[]}.  Nothing it leaves behind is inconsistent: the K/V rows and hidden states
-    // it added are keyed by text and valid, the previous keystroke's beam (prev_) is not replaced, and if it compacted
-    // the table for its own window the table is dropped.  Each decode_json clears the flag when it starts.
+    // it added are keyed by text and valid; the beam positions it completed past its frozen line replace prev_ (the next
+    // keystroke recomputes from there), and if it completed none, prev_ stays and a table it compacted for its own window
+    // is dropped.  Each decode_json clears the flag when it starts.
     void abort() { abort_.store(true, std::memory_order_relaxed); }
     struct Aborted {};
     bool tier_fast() const { return tier_fast_; }

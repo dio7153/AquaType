@@ -51,7 +51,11 @@ std::string v2_json_escape(const std::string& s) { std::string o; for (unsigned 
 
 V2Session::V2Session(const std::string& dir) {
     set_cache_limit((size_t)4 << 20);   // MLX's buffer cache: every MB of it is footprint, and 4 MB costs no latency
-    model_ = std::make_unique<V2Model>(dir); b_ = model_->config(); std::string tj = slurp(dir + "/tables.json");
+    model_ = std::make_unique<V2Model>(dir); b_ = model_->config();
+#ifdef AQ_CPU
+    model_->stop = &abort_;                    // the syllable pass checks it between layers (MLX runs it as one GPU graph)
+#endif
+    std::string tj = slurp(dir + "/tables.json");
     keys_ = json_str_list(tj, "keys"); syls_ = json_str_list(tj, "syllables"); chars_ = json_str_list(tj, "chars");
     for (size_t i = 0; i < keys_.size(); i++) kid_[keys_[i]] = (int)i + 1;
     auto t = load_safetensors(dir + "/tables.safetensors"); auto& m = t.first;
@@ -238,6 +242,7 @@ std::vector<V2Candidate> V2Session::decode_once(const std::string& keys_str, con
     array h = model_->syl_hidden(keys_sub); async_eval(h);
     T.syllable_ms = ms_since(t0); t0 = clk::now();
     LatticeOut lat = lat_f.get();
+    if (abort_.load(std::memory_order_relaxed)) throw Aborted{};                      // the syllable pass may have stopped short
     struct Arc { int s, e, y; float cost; int ned; }; std::vector<Arc> arcs; arcs.reserve(lat.cand_syl.size() + 4096);
     std::unordered_map<long long, size_t> tail_seen;
     for (size_t g = 0; g < lat.seg_start.size(); g++) for (int32_t a = lat.seg_offset[g]; a < lat.seg_offset[g + 1]; a++) {
@@ -340,9 +345,35 @@ std::vector<V2Candidate> V2Session::decode_once(const std::string& keys_str, con
         } else q0 = 0;
     }
     T.n_frozen_positions = q0; T.n_front_from = c0;
+    // The next keystroke inherits this beam: positions <= n_done (all of them for a finished decode).  Only the top-U nodes
+    // of each position and their ancestor chains can ever be used again (the beam expands the top U of a position;
+    // candidates and compaction follow chains), so the list is garbage-collected and renumbered here; otherwise every
+    // keystroke's dead expansions would be carried along until the node list hit max_nodes.
+    auto keep_beam = [&](int n_done) {
+        std::vector<char> mark(nodes.size(), 0); mark[0] = 1;
+        const int keepU = b.U;
+        for (size_t q = 0; q < at.size(); q++) { auto& lst = at[q];
+            if ((int)q > n_done) { lst.clear(); continue; }                                       // half-built: not handed on
+            if ((int)lst.size() > keepU) { std::partial_sort(lst.begin(), lst.begin() + keepU, lst.end(), [&](int x, int y) { return nodes[x].score > nodes[y].score; }); lst.resize(keepU); }
+            for (int id : lst) for (int x = id; x >= 0 && !mark[x]; x = nodes[x].prev) mark[x] = 1;
+        }
+        std::vector<int> newid(nodes.size(), -1); std::vector<Node> kept; kept.reserve(nodes.size() / 4 + 1024);
+        for (size_t i = 0; i < nodes.size(); i++) if (mark[i]) { newid[i] = (int)kept.size(); kept.push_back(nodes[i]); }
+        // a better derivation found later can point a node at a parent with a higher index, so parents are remapped in a second pass
+        for (auto& n : kept) if (n.prev >= 0) n.prev = newid[n.prev];
+        for (auto& lst : at) for (int& id : lst) id = newid[id];
+        prev_.nodes.assign((const char*)kept.data(), (const char*)kept.data() + kept.size() * sizeof(Node)); prev_.at = std::move(at); prev_.keys = keys_str; prev_.ctx = ctx_key; prev_.nk = n_done;
+    };
     for (int q = 0; q <= nk; q++) {
         if (q < q0 - max_seg_len_) continue;                                                       // frozen, and no arc from here reaches the fresh region
-        if (abort_.load(std::memory_order_relaxed)) { if (compacted) kv_valid_ = false; throw Aborted{}; }   // between steps; a table compacted for this window does not fit prev_
+        if (abort_.load(std::memory_order_relaxed)) {                                              // between steps
+            // Every arc into q starts before q, so positions <= q are complete, and every node this decode expanded has its
+            // K/V row.  Past this decode's own frozen line they are handed on like a finished beam: on a machine slower
+            // than the typing every decode is stopped, and without this the next one would start again from the last
+            // decode that finished, its window growing with every stopped keystroke.  Otherwise prev_ stays, and a table
+            // compacted for this window does not fit it.
+            if (freeze_dist_ > 0 && q > q0 && q > 1) keep_beam(q); else if (compacted) kv_valid_ = false;
+            throw Aborted{}; }
         auto tq = clk::now(); auto& src = at[q]; if (src.empty()) continue;
         // only the top U of a position are ever expanded, so the rest does not need ordering: O(n log U), not O(n log n)
         if (src.size() <= (size_t)b.U) std::sort(src.begin(), src.end(), [&](int x, int y) { return nodes[x].score > nodes[y].score; });
@@ -434,24 +465,7 @@ std::vector<V2Candidate> V2Session::decode_once(const std::string& keys_str, con
         std::reverse(chs.begin(), chs.end()); std::reverse(syls.begin(), syls.end()); std::reverse(poss.begin(), poss.end());
         for (size_t j = 0; j < chs.size(); j++) { c.text += chars_[chs[j]]; c.reading.push_back(syls[j]); c.char_ends.push_back(j + 1 < poss.size() ? poss[j + 1] - 1 : nk - 1); }
         c.score = p.first; c.prefix = prefix; out.push_back(std::move(c)); if ((int)out.size() >= b.K) break; }
-    if (freeze_dist_ > 0) {
-        // The next keystroke inherits this beam.  Only the top-U nodes of each position and their ancestor chains can ever be
-        // used again (the beam expands the top U of a position; candidates and compaction follow chains), so the list is
-        // garbage-collected and renumbered here; otherwise every keystroke's dead expansions would be carried along until
-        // the node list hit max_nodes.
-        std::vector<char> mark(nodes.size(), 0); mark[0] = 1;
-        const int keepU = b.U;
-        for (auto& lst : at) {
-            if ((int)lst.size() > keepU) { std::partial_sort(lst.begin(), lst.begin() + keepU, lst.end(), [&](int x, int y) { return nodes[x].score > nodes[y].score; }); lst.resize(keepU); }
-            for (int id : lst) for (int x = id; x >= 0 && !mark[x]; x = nodes[x].prev) mark[x] = 1;
-        }
-        std::vector<int> newid(nodes.size(), -1); std::vector<Node> kept; kept.reserve(nodes.size() / 4 + 1024);
-        for (size_t i = 0; i < nodes.size(); i++) if (mark[i]) { newid[i] = (int)kept.size(); kept.push_back(nodes[i]); }
-        // a better derivation found later can point a node at a parent with a higher index, so parents are remapped in a second pass
-        for (auto& n : kept) if (n.prev >= 0) n.prev = newid[n.prev];
-        for (auto& lst : at) for (int& id : lst) id = newid[id];
-        prev_.nodes.assign((const char*)kept.data(), (const char*)kept.data() + kept.size() * sizeof(Node)); prev_.at = std::move(at); prev_.keys = keys_str; prev_.ctx = ctx_key; prev_.nk = nk;
-    }
+    if (freeze_dist_ > 0) keep_beam(nk);
     T.n_slots_used = cache.n_slots - slots_at_start; T.finish_ms = ms_since(t0); T.total_ms = ms_since(t_all);
     // build vs eval: the step's cost splits into host-side MLX graph construction and the GPU evaluation it waits on
     if (V2TIME) std::fprintf(stderr, "[v2time] nk %3d enum %5.1f syl %5.1f spans %5.1f prune %5.1f lm %6.1f (build %5.1f eval %5.1f host %5.1f) beam %6.1f finish %5.1f | total %6.1f ms | arcs %d nodes %d steps %d lm hit %d miss %d slots %d\n",

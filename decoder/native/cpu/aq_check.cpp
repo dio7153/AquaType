@@ -3,7 +3,7 @@
 // candidate and in the first three once its keys are all in, and how long each key's decode takes.
 //   aq_check <model_dir> <sentences.tsv>            the check
 //   aq_check <model_dir> <sentences.tsv> --jumps    key-by-key vs several keys at once must give the same candidates
-//   aq_check <model_dir> <sentences.tsv> --abort    aq_abort from another thread leaves nothing behind
+//   aq_check <model_dir> <sentences.tsv> --abort    aq_abort from another thread: stopped decodes, same first candidate
 //   aq_check <model_dir> --keys "<key string>"      the candidates for one key string, cold
 //   aq_check <model_dir> --tier                     aq_tier / aq_set_tier round trip (run with AQ_TIER unset)
 #include "aquadecoder.h"
@@ -205,18 +205,22 @@ static void segments(const std::vector<double>& times, const std::vector<std::ve
     if (!cold.empty()) std::printf("first sentence (cold): keys %zu  p50 %.0f  max %.0f ms\n", cold.size(), pct(cold, 0.5), pct(cold, 1.0));
 }
 
-// --abort: aq_abort from another thread, the way the engine stops a stale decode when newer keys arrive.  Every third
-// keystroke is aborted after 0-40 ms; then the sentence is typed again skipping exactly the keystrokes that did abort
-// (what the host would have sent had it known), and the candidates after the last key must be the same: an aborted
-// decode must leave nothing behind that changes a later one.  Exit status 1 on a difference or if nothing aborted.
+// --abort: aq_abort from another thread, the way the engine stops a stale decode when newer keys arrive.  In every run of
+// AQ_ABORT_RUN keystrokes (default 3) all but the last are aborted after 0-40 ms, as on a machine slower than the typing;
+// then the sentence is typed again skipping exactly the keystrokes that did abort (what the host would have sent had it
+// known).  A stopped decode hands on the beam positions it completed, so near-ties further down can come out in another
+// order, as with --jumps; the first candidate after the last key must match.  Exit status 1 on a different first
+// candidate or if nothing aborted.  On long inputs with long runs the first candidate can differ too; how often each way
+// is right is printed.
 static int abort_run(aq_decoder* d, const std::vector<std::pair<std::string, std::string>>& rows) {
     unsigned seed = 11; auto rnd = [&](unsigned m) { seed = seed * 1103515245u + 12345u; return (seed >> 16) % m; };
-    int same = 0, aborted = 0, tried = 0;
+    const int run = std::max(2, std::getenv("AQ_ABORT_RUN") ? std::atoi(std::getenv("AQ_ABORT_RUN")) : 3);
+    int same = 0, top1_same = 0, aborted = 0, tried = 0, right_a = 0, right_b = 0;
     for (auto& [keys, sentence] : rows) {
         std::vector<char> skipped(keys.size() + 1, 0); std::vector<std::string> a, b;
         aq_reset(d);
         for (size_t n = 1; n <= keys.size(); n++) {
-            const bool stop = n % 3 == 0 && n < keys.size(); std::thread th;
+            const bool stop = n % run != 0 && n < keys.size(); std::thread th;
             if (stop) { const unsigned wait = rnd(41); tried++; th = std::thread([d, wait] { std::this_thread::sleep_for(std::chrono::milliseconds(wait)); aq_abort(d); }); }
             char* js = aq_decode(d, keys.substr(0, n).c_str(), nullptr);
             if (th.joinable()) th.join();
@@ -233,11 +237,13 @@ static int abort_run(aq_decoder* d, const std::vector<std::pair<std::string, std
             aq_free(js); aq_maintain(d);
         }
         a.resize(std::min<size_t>(3, a.size())); b.resize(std::min<size_t>(3, b.size()));
-        same += a == b;
+        same += a == b; top1_same += !a.empty() && !b.empty() && a[0] == b[0];
+        right_a += !a.empty() && a[0] == sentence; right_b += !b.empty() && b[0] == sentence;
         if (a != b) std::printf("differs: %s\n  with aborts: %s\n  skipping:    %s\n", sentence.c_str(), a.empty() ? "" : a[0].c_str(), b.empty() ? "" : b[0].c_str());
     }
-    std::printf("abort: %d of %d attempted aborts stopped a decode; %d/%zu sentences with the same first three as typing without those keys\n", aborted, tried, same, rows.size());
-    return same == (int)rows.size() && aborted > 0 ? 0 : 1;
+    std::printf("abort: %d of %d attempted aborts stopped a decode; %d/%zu sentences with the same first three as typing without those keys (first candidate %d/%zu); first candidate right: with aborts %d, skipping %d\n",
+                aborted, tried, same, rows.size(), top1_same, rows.size(), right_a, right_b);
+    return top1_same == (int)rows.size() && aborted > 0 ? 0 : 1;
 }
 
 int main(int argc, char** argv) {

@@ -4,6 +4,7 @@
 // weights are widened to fp32 once at load.  The K/V table keeps the MLX path's format: each row's k and v in 8 bits,
 // each half scaled by its absmax / 127.
 #pragma once
+#include <atomic>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -22,8 +23,10 @@ class V2Model {
 public:
     explicit V2Model(const std::string& dir);
     const V2Config& config() const { return cfg_; }
-    // the syllable model's final hidden states [L, d] fp32
+    // the syllable model's final hidden states [L, d] fp32; an empty array when *stop was set between two layers (the
+    // session's abort: the pass is most of a long input's decode, and a stale one should not run to its end)
     cpu::array syl_hidden(const std::vector<int32_t>& key_ids) const;
+    const std::atomic<bool>* stop = nullptr;
     bool has_char_head() const { return has_char_head_; }
     int n_char() const { return n_char_; }
     std::vector<float> char_head_logits(const cpu::array& hfull, const std::vector<int32_t>& rows, const std::vector<int32_t>& cols) const;
