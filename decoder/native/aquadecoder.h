@@ -13,6 +13,10 @@ void aq_close(aq_decoder* d);
 // Returns a malloc'ed JSON string {"candidates":[{text,score,char_ends,reading,prefix,...}],"timing_ms":{...},...};
 // free with aq_free.  NULL on failure.
 char* aq_decode(aq_decoder* d, const char* keys, const char* ctx_json);
+// Thread-safe: the host has newer keys for this decoder, so a decode in progress on another thread is stale.  It stops
+// at its next step boundary and returns {"aborted":true,"candidates":[]}; the next aq_decode is unaffected (and as fast
+// as after a completed one, apart from the rare case where the aborted decode had compacted the table).
+void aq_abort(aq_decoder* d);
 // A sentence is over (a commit, or a new context): forget the state kept between its keystrokes.
 void aq_reset(aq_decoder* d);
 // Housekeeping between keystrokes: compact the K/V table for the next one.  The host calls it AFTER it has written the

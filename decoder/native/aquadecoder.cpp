@@ -50,6 +50,7 @@ char* aq_decode(aq_decoder* d, const char* keys, const char* ctx_json) {
         return dup_js(js);
     } catch (const std::exception& e) { g_err = e.what(); return nullptr; }
 }
+void aq_abort(aq_decoder* d) { if (d) d->v2->abort(); }
 void aq_reset(aq_decoder* d) { if (d) d->v2->reset(); }
 void aq_maintain(aq_decoder* d) { if (d) d->v2->maintain(); }
 int aq_char_id(aq_decoder* d, const char* c) {

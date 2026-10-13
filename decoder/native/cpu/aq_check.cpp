@@ -3,6 +3,7 @@
 // candidate and in the first three once its keys are all in, and how long each key's decode takes.
 //   aq_check <model_dir> <sentences.tsv>            the check
 //   aq_check <model_dir> <sentences.tsv> --jumps    key-by-key vs several keys at once must give the same candidates
+//   aq_check <model_dir> <sentences.tsv> --abort    aq_abort from another thread leaves nothing behind
 //   aq_check <model_dir> --keys "<key string>"      the candidates for one key string, cold
 //   aq_check <model_dir> --tier                     aq_tier / aq_set_tier round trip (run with AQ_TIER unset)
 #include "aquadecoder.h"
@@ -13,10 +14,12 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#include <psapi.h>
 #endif
 
 static std::vector<std::string> texts(const char* js) {   // "text":"..." in order; the decoder writes UTF-8 unescaped
@@ -202,6 +205,41 @@ static void segments(const std::vector<double>& times, const std::vector<std::ve
     if (!cold.empty()) std::printf("first sentence (cold): keys %zu  p50 %.0f  max %.0f ms\n", cold.size(), pct(cold, 0.5), pct(cold, 1.0));
 }
 
+// --abort: aq_abort from another thread, the way the engine stops a stale decode when newer keys arrive.  Every third
+// keystroke is aborted after 0-40 ms; then the sentence is typed again skipping exactly the keystrokes that did abort
+// (what the host would have sent had it known), and the candidates after the last key must be the same: an aborted
+// decode must leave nothing behind that changes a later one.  Exit status 1 on a difference or if nothing aborted.
+static int abort_run(aq_decoder* d, const std::vector<std::pair<std::string, std::string>>& rows) {
+    unsigned seed = 11; auto rnd = [&](unsigned m) { seed = seed * 1103515245u + 12345u; return (seed >> 16) % m; };
+    int same = 0, aborted = 0, tried = 0;
+    for (auto& [keys, sentence] : rows) {
+        std::vector<char> skipped(keys.size() + 1, 0); std::vector<std::string> a, b;
+        aq_reset(d);
+        for (size_t n = 1; n <= keys.size(); n++) {
+            const bool stop = n % 3 == 0 && n < keys.size(); std::thread th;
+            if (stop) { const unsigned wait = rnd(41); tried++; th = std::thread([d, wait] { std::this_thread::sleep_for(std::chrono::milliseconds(wait)); aq_abort(d); }); }
+            char* js = aq_decode(d, keys.substr(0, n).c_str(), nullptr);
+            if (th.joinable()) th.join();
+            if (!js) return 2;
+            if (std::strstr(js, "\"aborted\":true")) { skipped[n] = 1; aborted++; }
+            else { if (n == keys.size()) a = texts(js); aq_maintain(d); }
+            aq_free(js);
+        }
+        aq_reset(d);
+        for (size_t n = 1; n <= keys.size(); n++) {
+            if (skipped[n]) continue;
+            char* js = aq_decode(d, keys.substr(0, n).c_str(), nullptr); if (!js) return 2;
+            if (n == keys.size()) b = texts(js);
+            aq_free(js); aq_maintain(d);
+        }
+        a.resize(std::min<size_t>(3, a.size())); b.resize(std::min<size_t>(3, b.size()));
+        same += a == b;
+        if (a != b) std::printf("differs: %s\n  with aborts: %s\n  skipping:    %s\n", sentence.c_str(), a.empty() ? "" : a[0].c_str(), b.empty() ? "" : b[0].c_str());
+    }
+    std::printf("abort: %d of %d attempted aborts stopped a decode; %d/%zu sentences with the same first three as typing without those keys\n", aborted, tried, same, rows.size());
+    return same == (int)rows.size() && aborted > 0 ? 0 : 1;
+}
+
 int main(int argc, char** argv) {
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
@@ -230,8 +268,22 @@ int main(int argc, char** argv) {
     std::ifstream f(argv[2]); if (!f) { std::fprintf(stderr, "cannot read %s\n", argv[2]); return 1; }
     std::vector<std::pair<std::string, std::string>> rows; std::string line;
     while (std::getline(f, line)) { if (!line.empty() && line.back() == '\r') line.pop_back(); size_t tab = line.find('\t'); if (tab == std::string::npos) continue; rows.push_back({line.substr(0, tab), line.substr(tab + 1)}); }
+    // AQ_REPEAT=N: the rows N times over (a long session); AQ_MEM: the process's memory every 100 sentences, to see that
+    // it levels off instead of growing with use
+    if (const char* r = std::getenv("AQ_REPEAT")) { const auto one = rows; for (int i = 1; i < std::atoi(r); i++) rows.insert(rows.end(), one.begin(), one.end()); }
+    const bool mem = std::getenv("AQ_MEM") != nullptr;
+    auto print_mem = [&](size_t done) {
+#ifdef _WIN32
+        PROCESS_MEMORY_COUNTERS_EX pm{}; GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm, sizeof(pm));
+        std::fprintf(stderr, "mem sentences %zu working %.0f MB private %.0f MB peak working %.0f MB\n", done, pm.WorkingSetSize / 1048576.0, pm.PrivateUsage / 1048576.0, pm.PeakWorkingSetSize / 1048576.0);
+#else
+        (void)done;
+#endif
+    };
     { char* js = aq_decode(d, "ji3", nullptr); aq_free(js); aq_reset(d); }       // the first decode warms up; not timed
+    if (mem) print_mem(0);
     if (argc > 3 && std::strcmp(argv[3], "--jumps") == 0) { int r = jumps_run(d, rows); aq_close(d); return r; }
+    if (argc > 3 && std::strcmp(argv[3], "--abort") == 0) { int r = abort_run(d, rows); aq_close(d); return r; }
     if (const char* ac = std::getenv("AQ_COMMIT")) { int r = commit_run(d, rows, std::atoi(ac)); aq_close(d); return r; }
     std::vector<double> times; int top1 = 0, top3 = 0; std::vector<std::string> missed;
     std::vector<std::vector<std::u32string>> firsts;              // per sentence, the first candidate after each key
@@ -250,6 +302,7 @@ int main(int argc, char** argv) {
         top1 += t1; top3 += t3;
         std::string got; for (size_t i = 0; i < last.size() && i < 3; i++) { if (i) got += " / "; got += last[i]; }
         std::printf("%s %-24s -> %s\n", t1 ? "1" : t3 ? "3" : "x", sentence.c_str(), got.c_str());
+        if (mem && truths.size() % 100 == 0) print_mem(truths.size());
     }
     std::vector<double> s = times; std::sort(s.begin(), s.end());
     std::printf("%zu sentences, %zu keys: first %d, in the first three %d; per key p50 %.0f ms, p95 %.0f ms, max %.0f ms\n",

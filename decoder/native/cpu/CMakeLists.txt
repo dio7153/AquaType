@@ -71,6 +71,17 @@ if(MSVC)
   target_compile_options(aq_check PRIVATE /O2 /utf-8 /EHsc)
 endif()
 
+if(WIN32)
+  # the installer's speed check: loads aquadecoder.dll from its own folder, prints one JSON line (aq_bench.cpp)
+  add_executable(aq_bench aq_bench.cpp)
+  add_dependencies(aq_bench aquadecoder)
+  if(MSVC)
+    set_property(TARGET aq_bench PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
+    target_compile_options(aq_bench PRIVATE /O2 /utf-8 /EHsc)
+    target_link_options(aq_bench PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)   # no console window; stdout still reaches a redirect
+  endif()
+endif()
+
 add_executable(bench_gemm bench_gemm.cpp cpu_ops.cpp)
 target_link_libraries(bench_gemm PRIVATE OpenMP::OpenMP_CXX)
 if(MSVC)

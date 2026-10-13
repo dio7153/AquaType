@@ -107,6 +107,9 @@ V2Session::V2Session(const std::string& dir) {
     if (const char* e = std::getenv("AQ_FINAL_U")) if (std::atoi(e) > 0) { final_u_ = std::atoi(e); tier_auto_ = false; }
     // the syllable pass costs in proportion to the keys it sees (syl_ctx_ of them before the re-walked region)
     if (const char* e = std::getenv("AQ_SYL_CTX")) if (std::atoi(e) > 0) syl_ctx_ = std::atoi(e);
+    if (const char* e = std::getenv("AQ_SHORT_KEYS")) short_keys_ = std::atoi(e);
+    if (const char* e = std::getenv("AQ_SHORT_U")) short_u_ = std::atoi(e);
+    if (const char* e = std::getenv("AQ_SHORT_FINAL_U")) short_final_u_ = std::atoi(e);
 #endif
     clear_cache(); host_release_free_pages();
 }
@@ -208,8 +211,12 @@ bool V2Session::compact_for_window(int q0, int extra) {
 std::vector<V2Candidate> V2Session::decode_once(const std::string& keys_str, const std::vector<V2CtxToken>& ctx, V2Timing* tm) {
     const double build0 = model_->prof_build_ms, eval0 = model_->prof_eval_ms;
     auto t_all = clk::now(); V2Timing T0; V2Timing& T = tm ? *tm : T0;
-    const V2Config& b = b_; const int OFF = b.OFF;
     std::vector<int32_t> keys = encode_keys(keys_str); const int nk = (int)keys.size();
+    // a short input may get a wider beam (short_keys_ / short_u_ / short_final_u_): it is cheap there, and a short word
+    // whose first character ranks below U on its own is otherwise gone
+    V2Config bw = b_; int final_u = final_u_;
+    if (short_keys_ > 0 && nk <= short_keys_) { if (short_u_ > bw.U) bw.U = short_u_; if (short_final_u_ > final_u) final_u = short_final_u_; }
+    const V2Config& b = bw; const int OFF = b.OFF;
     // ---- context: the max-weight character of each token as language-model prefix; frozen tokens also form the visible prefix
     // At most the last kMaxContext tokens, the host's own limit, so the root always fits the position table.
     constexpr size_t kMaxContext = 64;
@@ -302,6 +309,7 @@ std::vector<V2Candidate> V2Session::decode_once(const std::string& keys_str, con
         }
     }
     T.prune_ms = ms_since(t0); T.n_kept = n_kept;
+    if (abort_.load(std::memory_order_relaxed)) throw Aborted{};                      // before the table is touched
     // ---- beam
     // reserved past the high-water mark of a long sentence (60-78k nodes), so a long row does not reallocate and copy
     // several megabytes in the middle of its own decode
@@ -322,7 +330,7 @@ std::vector<V2Candidate> V2Session::decode_once(const std::string& keys_str, con
     const int slots_at_start = kv_.n_slots;
     V2Model::KVCache& cache = kv_;
     std::vector<int> cur; std::vector<float> eos_lp; bool over = false, reached_end = false; double lm_ms = 0, beam_ms = 0; int n_cached = 0, n_computed = 0;
-    hmap_.begin((size_t)b_.U * (size_t)(nk + 2));                  // per position: text hash -> node, so the beam holds distinct texts
+    hmap_.begin((size_t)b.U * (size_t)(nk + 2));                  // per position: text hash -> node, so the beam holds distinct texts
     int q0 = 0;                                                        // positions < q0 are frozen: copied from the previous keystroke's beam
     if (freeze_possible && !cache_reset) {
         q0 = q0_want;
@@ -334,6 +342,7 @@ std::vector<V2Candidate> V2Session::decode_once(const std::string& keys_str, con
     T.n_frozen_positions = q0; T.n_front_from = c0;
     for (int q = 0; q <= nk; q++) {
         if (q < q0 - max_seg_len_) continue;                                                       // frozen, and no arc from here reaches the fresh region
+        if (abort_.load(std::memory_order_relaxed)) { if (compacted) kv_valid_ = false; throw Aborted{}; }   // between steps; a table compacted for this window does not fit prev_
         auto tq = clk::now(); auto& src = at[q]; if (src.empty()) continue;
         // only the top U of a position are ever expanded, so the rest does not need ordering: O(n log U), not O(n log n)
         if (src.size() <= (size_t)b.U) std::sort(src.begin(), src.end(), [&](int x, int y) { return nodes[x].score > nodes[y].score; });
@@ -341,7 +350,7 @@ std::vector<V2Candidate> V2Session::decode_once(const std::string& keys_str, con
         {
             // The last position expands no children - it only scores end-of-sentence and hands the candidates out - so the
             // pool there costs one step's extra rows, and a step's cost is its kernel launches, not its rows.
-            const size_t take = (q == nk && final_u_ > b.U) ? (size_t)final_u_ : (size_t)b.U;
+            const size_t take = (q == nk && final_u > b.U) ? (size_t)final_u : (size_t)b.U;
             cur.assign(src.begin(), src.begin() + std::min(take, src.size()));                   // distinct texts already (dedup at push), so top U
         }
         if (q < nk && by_start[q].empty()) { beam_ms += ms_since(tq); continue; }                     // nothing leaves this position: the model call would be wasted
@@ -462,7 +471,10 @@ std::string V2Session::decode_json(const std::string& keys, const std::string& c
         if (w != std::string::npos && w < end) for (double x : nums(w)) t.weights.push_back((float)x);
         if (end == std::string::npos) break;                                // a token cut short: the rest is not context
         ctx.push_back(t); p = end + 1; }
-    V2Timing T; auto cands = decode(keys, ctx, &T); note_key_ms(T.total_ms);
+    abort_.store(false, std::memory_order_relaxed);
+    V2Timing T; std::vector<V2Candidate> cands;
+    try { cands = decode(keys, ctx, &T); } catch (const Aborted&) { return "{\"aborted\":true,\"candidates\":[]}"; }
+    note_key_ms(T.total_ms);
     std::ostringstream o; o << "{\"candidates\":[";
     for (size_t i = 0; i < cands.size(); i++) { const auto& c = cands[i]; if (i) o << ","; o << "{\"text\":\"" << v2_json_escape(c.text) << "\",\"score\":" << c.score << ",\"fit_total\":0,\"char_ends\":[";
         for (size_t j = 0; j < c.char_ends.size(); j++) { if (j) o << ","; o << c.char_ends[j]; } o << "],\"reading\":["; for (size_t j = 0; j < c.reading.size(); j++) { if (j) o << ","; o << c.reading[j]; } o << "],\"prefix\":\"" << v2_json_escape(c.prefix) << "\"}"; }

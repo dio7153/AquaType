@@ -14,7 +14,7 @@ namespace {
 struct Api {
     decltype(&aq_open) open; decltype(&aq_close) close; decltype(&aq_decode) decode; decltype(&aq_reset) reset;
     decltype(&aq_maintain) maintain; decltype(&aq_char_id) char_id; decltype(&aq_readings) readings; decltype(&aq_free) free;
-    decltype(&aq_last_error) last_error; decltype(&aq_version) version; decltype(&aq_tier) tier; decltype(&aq_set_tier) set_tier;
+    decltype(&aq_last_error) last_error; decltype(&aq_version) version; decltype(&aq_tier) tier; decltype(&aq_set_tier) set_tier; decltype(&aq_abort) abort;
 };
 Api api{}; bool loaded = false; std::string err, version; std::once_flag once;
 
@@ -51,7 +51,7 @@ void load() {
     auto get = [&](auto& f, const char* sym) { f = reinterpret_cast<std::remove_reference_t<decltype(f)>>(GetProcAddress(h, sym)); if (!f) ok = false; };
     get(api.open, "aq_open"); get(api.close, "aq_close"); get(api.decode, "aq_decode"); get(api.reset, "aq_reset");
     get(api.maintain, "aq_maintain"); get(api.char_id, "aq_char_id"); get(api.readings, "aq_readings"); get(api.free, "aq_free");
-    get(api.last_error, "aq_last_error"); get(api.version, "aq_version"); get(api.tier, "aq_tier"); get(api.set_tier, "aq_set_tier");
+    get(api.last_error, "aq_last_error"); get(api.version, "aq_version"); get(api.tier, "aq_tier"); get(api.set_tier, "aq_set_tier"); get(api.abort, "aq_abort");
     if (!ok) { err = std::string(name) + " lacks part of the C API"; return; }
     version = std::string(api.version()) + (avx2 ? "/avx2" : "/sse");
     loaded = true;
@@ -63,6 +63,7 @@ extern "C" {
 aq_decoder* aq_open(const char* model_dir, const char* metallib_path) { return ready() ? api.open(model_dir, metallib_path) : nullptr; }
 void aq_close(aq_decoder* d) { if (d && ready()) api.close(d); }
 char* aq_decode(aq_decoder* d, const char* keys, const char* ctx_json) { return ready() ? api.decode(d, keys, ctx_json) : nullptr; }
+void aq_abort(aq_decoder* d) { if (d && ready()) api.abort(d); }
 void aq_reset(aq_decoder* d) { if (ready()) api.reset(d); }
 void aq_maintain(aq_decoder* d) { if (ready()) api.maintain(d); }
 int aq_char_id(aq_decoder* d, const char* c) { return ready() ? api.char_id(d, c) : -1; }
