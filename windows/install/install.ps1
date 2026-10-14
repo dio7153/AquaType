@@ -4,7 +4,8 @@
 # 2. registers the text service, 64-bit and 32-bit (regsvr32)
 # 3. adds "AquaType 注音" to this user's keyboards (zh-TW)
 # 4. starts the engine at logon (HKCU Run); until then the first app that uses AquaType starts it
-param([string]$Target = "$env:ProgramFiles\AquaType")
+# -RegisterOnly: steps 1-2 only (a test install: the keyboard is not added to the list, nothing starts at logon)
+param([string]$Target = "$env:ProgramFiles\AquaType", [switch]$RegisterOnly)
 $ErrorActionPreference = 'Stop'
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw "run this as administrator" }
@@ -38,6 +39,7 @@ if (Test-Path $dll32) {                                 # the 32-bit copy, for 3
     if ($p.ExitCode -ne 0) { Write-Warning "32-bit registration failed ($($p.ExitCode)); 32-bit apps will not have AquaType" }
 }
 
+if ($RegisterOnly) { "registered in $Target (not added to the keyboards)"; return }
 Add-Type -Namespace AquaType -Name Input -MemberDefinition '[DllImport("input.dll", CharSet = CharSet.Unicode)] public static extern bool InstallLayoutOrTip(string psz, uint flags);'
 if (-not [AquaType.Input]::InstallLayoutOrTip("0404:$clsid$prof", 0)) { Write-Warning "could not add the keyboard; add it in Settings > Time & language > Language > 中文(台灣) > Keyboards" }
 

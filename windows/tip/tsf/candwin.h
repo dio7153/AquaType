@@ -20,6 +20,7 @@ public:
     std::function<void(int)> on_select;          // a row was clicked: its index in the candidate list
     std::function<void(bool)> on_page;           // the wheel: true = down
     std::function<void(int)> on_hover;           // the pointer is over a row: its index
+    std::function<void()> on_painted;            // a paint finished (the text service's AQ_TRACE timing)
     ~CandidateWindow();
     void show(const aqtip::PanelView& view, const RECT& anchor);   // anchor: the composition's screen rectangle
     void update(const aqtip::PanelView& view);                     // new content, same anchor

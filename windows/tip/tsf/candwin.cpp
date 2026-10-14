@@ -227,7 +227,7 @@ LRESULT CALLBACK CandidateWindow::proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     const float s = self ? self->dpi_ / 96.f : 1.f;
     switch (m) {
         case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
-        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); if (self) self->paint(); EndPaint(h, &ps); return 0; }
+        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); if (self) self->paint(); EndPaint(h, &ps); if (self && self->on_painted) self->on_painted(); return 0; }
         case WM_MOUSEMOVE: if (self && !self->view_.interim) {               // the highlight follows the pointer, as on the Mac
             const int row = self->row_at(GET_X_LPARAM(l) / s, GET_Y_LPARAM(l) / s);
             if (row >= 0 && row != self->view_.highlighted && self->on_hover) self->on_hover(row); }

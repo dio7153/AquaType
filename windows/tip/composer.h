@@ -94,6 +94,7 @@ public:
     void reset_session_mode() { ascii_session_ = false; }
     void set_ascii(bool ascii) { ascii_global_ = ascii; ascii_session_ = false; }   // the mode chosen from outside (the taskbar indicator)
     PanelView panel() const;
+    const std::string& panel_raw() const { return panel_raw_; }   // the keys the shown candidates answer
     bool panel_visible() const { return composing() && (!sentence_mode() || choosing_); }
     // 整句直出 (the default): the composition shows the sentence itself, as Microsoft Bopomofo does; ← → move inside it
     // and ↓ opens the candidates for the character at the caret.  Off: the bopomofo is shown and picked from the panel.

@@ -89,6 +89,7 @@ private:
     struct HostImpl; std::unique_ptr<HostImpl> host_;
     std::unique_ptr<aqtip::Composer> composer_;
     CandidateWindow panel_; RECT anchor_{}; bool have_anchor_ = false;
+    std::wstring trace_path_;                    // AQ_TRACE: where candidate window paints are noted (empty: not traced)
     ULONGLONG shift_down_at_ = 0; bool shift_held_ = false; bool other_key_with_shift_ = false;
     void shift_down(); bool shift_up(ITfContext* ctx);
     UINT settings_msg_ = 0;

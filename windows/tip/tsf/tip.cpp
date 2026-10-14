@@ -147,6 +147,13 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* tm, TfClientId id, DWORD flag
     panel_.on_select = [this](int i) { on_select(i); };
     panel_.on_page = [this](bool d) { on_page(d); };
     panel_.on_hover = [this](int i) { if (composer_) guard([&] { if (composer_->hover(i)) panel_.update(composer_->panel()); }); };
+    // AQ_TRACE=<file>: each paint of the candidate window appends "painted <QueryPerformanceCounter> <keys>", for measuring
+    // stop-typing-to-candidates in a real app (the host notes its keystrokes on the same clock)
+    if (wchar_t p[MAX_PATH]; GetEnvironmentVariableW(L"AQ_TRACE", p, MAX_PATH)) {
+        trace_path_ = p;
+        panel_.on_painted = [this] { if (!composer_) return; LARGE_INTEGER t; QueryPerformanceCounter(&t);
+            if (FILE* f = _wfopen(trace_path_.c_str(), L"ab")) { std::fprintf(f, "painted %lld %s\n", t.QuadPart, composer_->panel_raw().c_str()); std::fclose(f); } };
+    }
     // the conversion mode (中/英), and Windows' own on/off: its Ctrl+Space hotkey for Chinese (Traditional) input methods
     for (auto [g, cookie] : {std::pair<const GUID*, DWORD*>{&GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, &mode_sink_}, {&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, &openclose_sink_}})
         if (ITfCompartment* c = compartment(*g)) { ITfSource* s = nullptr;
