@@ -3,7 +3,8 @@
 // candidate and in the first three once its keys are all in, and how long each key's decode takes.
 //   aq_check <model_dir> <sentences.tsv>            the check
 //   aq_check <model_dir> <sentences.tsv> --jumps    key-by-key vs several keys at once must give the same candidates
-//   aq_check <model_dir> <sentences.tsv> --abort    aq_abort from another thread: stopped decodes, same first candidate
+//   aq_check <model_dir> <sentences.tsv> --backspace  backspaces and keys typed back: the forward first candidates
+//   aq_check <model_dir> <sentences.tsv> --abort   aq_abort from another thread: stopped decodes, same first candidate
 //   aq_check <model_dir> --keys "<key string>"      the candidates for one key string, cold
 //   aq_check <model_dir> --tier                     aq_tier / aq_set_tier round trip (run with AQ_TIER unset)
 #include "aquadecoder.h"
@@ -246,6 +247,39 @@ static int abort_run(aq_decoder* d, const std::vector<std::pair<std::string, std
     return top1_same == (int)rows.size() && aborted > 0 ? 0 : 1;
 }
 
+// --backspace: each sentence typed a key at a time, then one backspace, the key typed back, three backspaces and those
+// keys typed back.  Every one of those four decodes reuses the beam below its frozen line, so the first candidate must
+// be the one the same keys had on the way forward.  Exit status 1 on a different first candidate; the backspace decodes'
+// times are printed (a cold decode of a long composition is a second or more).
+static int backspace_run(aq_decoder* d, const std::vector<std::pair<std::string, std::string>>& rows) {
+    int top1_same = 0, top3_same = 0, cmp = 0, right_fwd = 0, right_back = 0; std::vector<double> ms;
+    auto top3 = [](std::vector<std::string> v) { v.resize(std::min<size_t>(3, v.size())); return v; };
+    for (auto& [keys, sentence] : rows) {
+        if (keys.size() < 4) continue;
+        const size_t n = keys.size(); std::vector<std::string> fwd1, fwd3, fwd;
+        aq_reset(d);
+        for (size_t k = 1; k <= n; k++) { char* js = aq_decode(d, keys.substr(0, k).c_str(), nullptr); if (!js) return 2;
+            if (k == n - 3) fwd3 = top3(texts(js)); if (k == n - 1) fwd1 = top3(texts(js)); if (k == n) fwd = top3(texts(js)); aq_free(js); aq_maintain(d); }
+        const std::pair<size_t, const std::vector<std::string>*> steps[] = {{n - 1, &fwd1}, {n, &fwd}, {n - 3, &fwd3}, {n, &fwd}};
+        std::vector<std::string> last;
+        for (int s = 0; s < 4; s++) {
+            auto t = std::chrono::steady_clock::now(); char* js = aq_decode(d, keys.substr(0, steps[s].first).c_str(), nullptr);
+            const double t_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count(); if (!js) return 2;
+            if (s == 0 || s == 2) ms.push_back(t_ms);
+            const std::vector<std::string> got = top3(texts(js)); aq_free(js); aq_maintain(d); last = got;
+            const auto& want = *steps[s].second; cmp++;
+            top3_same += got == want; top1_same += !got.empty() && !want.empty() && got[0] == want[0];
+            if (got.empty() || want.empty() || got[0] != want[0]) std::printf("differs (%s, %zu keys): %s\n  forward:   %s\n  backspace: %s\n", s % 2 ? "typed back" : "backspace", steps[s].first,
+                                                                    sentence.c_str(), want.empty() ? "" : want[0].c_str(), got.empty() ? "" : got[0].c_str());
+        }
+        right_fwd += !fwd.empty() && fwd[0] == sentence; right_back += !last.empty() && last[0] == sentence;
+    }
+    std::sort(ms.begin(), ms.end()); auto pct = [&](double p) { return ms.empty() ? 0.0 : ms[std::min(ms.size() - 1, (size_t)(ms.size() * p))]; };
+    std::printf("backspace: %d/%d decodes with the same first candidate as on the way forward (first three %d); backspace decode p50 %.0f p95 %.0f max %.0f ms; first candidate right: forward %d, after the backspaces %d\n",
+                top1_same, cmp, top3_same, pct(0.5), pct(0.95), pct(1.0), right_fwd, right_back);
+    return top1_same == cmp ? 0 : 1;
+}
+
 int main(int argc, char** argv) {
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
@@ -290,6 +324,7 @@ int main(int argc, char** argv) {
     if (mem) print_mem(0);
     if (argc > 3 && std::strcmp(argv[3], "--jumps") == 0) { int r = jumps_run(d, rows); aq_close(d); return r; }
     if (argc > 3 && std::strcmp(argv[3], "--abort") == 0) { int r = abort_run(d, rows); aq_close(d); return r; }
+    if (argc > 3 && std::strcmp(argv[3], "--backspace") == 0) { int r = backspace_run(d, rows); aq_close(d); return r; }
     if (const char* ac = std::getenv("AQ_COMMIT")) { int r = commit_run(d, rows, std::atoi(ac)); aq_close(d); return r; }
     std::vector<double> times; int top1 = 0, top3 = 0; std::vector<std::string> missed;
     std::vector<std::vector<std::u32string>> firsts;              // per sentence, the first candidate after each key

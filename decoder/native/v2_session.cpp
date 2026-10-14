@@ -186,16 +186,16 @@ void V2Session::maintain() {
     host_release_free_pages();
     if (freeze_dist_ <= 0 || prev_.nk <= 0 || !kv_valid_ || kv_.n_slots <= (int)max_slots_) return;
     int q0 = std::min(prev_.nk, prev_.nk + 1 - freeze_dist_); if (q0 <= 1) return;
-    compact_for_window(q0, 6);                                 // parents up to six positions past the line too: the host may coalesce a few keystrokes
+    compact_for_window(q0, 6, 6);                              // parents up to six positions past the line too (the host may coalesce a few keystrokes), and six before it (backspace)
 }
-// Keep the K/V rows the recomputation window will need - the top-U parents at positions [q0 - max_seg_len, q0 + extra) of
+// Keep the K/V rows the recomputation window will need - the top-U parents at positions [q0 - max_seg_len - back, q0 + extra) of
 // the previous beam and their ancestor chains - and drop everything else, so the table (and the hidden-state store) stay
 // small on a long sentence instead of resetting, which would forbid the window.  Returns false when a needed slot is
 // missing (then a reset follows).
-bool V2Session::compact_for_window(int q0, int extra) {
+bool V2Session::compact_for_window(int q0, int extra, int back) {
     const Node* pn = (const Node*)prev_.nodes.data(); const int P = kv_.n_root; const int U = b_.U;
     std::vector<int32_t> keep; std::unordered_map<uint64_t, int32_t> slot2; std::unordered_map<uint64_t, Hidden> hid2; keep.reserve(4096);
-    for (int q = std::max(0, q0 - max_seg_len_); q < std::min(prev_.nk, q0 + extra); q++) {
+    for (int q = std::max(0, q0 - max_seg_len_ - back); q < std::min(prev_.nk, q0 + extra); q++) {
         std::vector<int> ids = prev_.at[q]; if ((int)ids.size() > U) { std::partial_sort(ids.begin(), ids.begin() + U, ids.end(), [&](int x, int y) { return pn[x].score > pn[y].score; }); ids.resize(U); }
         for (int id : ids) for (int x = id; x >= 0 && pn[x].ch >= 0; x = pn[x].prev) {
             uint64_t h = pn[x].h; if (slot2.count(h)) break;                                   // the rest of this chain is already kept
@@ -210,6 +210,16 @@ bool V2Session::compact_for_window(int q0, int extra) {
         const uint16_t* hp = hidden_of(hh->second); hid2[kv.first] = Hidden{(uint32_t)arena2.size(), hh->second.lse};
         arena2.insert(arena2.end(), hp, hp + b_.chr_d); }
     model_->compact(kv_, keep); slot_of_.swap(slot2); lm_hidden_.swap(hid2); hid_arena_.swap(arena2); return true;   // alt now holds the old arena's storage for next time
+}
+// Whether every top-U node the window re-expands (prev_ positions [q0 - max_seg_len, q0)) still has its K/V row and its
+// ancestors theirs.  Always true when the keys grew (those positions were expanded after the last compaction kept
+// them); after a backspace the line moves back, possibly past what maintain() kept.
+bool V2Session::window_has_rows(int q0) const {
+    const Node* pn = (const Node*)prev_.nodes.data(); const int U = b_.U;
+    for (int q = std::max(0, q0 - max_seg_len_); q < std::min(prev_.nk, q0); q++) {
+        std::vector<int> ids = prev_.at[q]; if ((int)ids.size() > U) { std::partial_sort(ids.begin(), ids.begin() + U, ids.end(), [&](int x, int y) { return pn[x].score > pn[y].score; }); ids.resize(U); }
+        for (int id : ids) for (int x = id; x >= 0 && pn[x].ch >= 0; x = pn[x].prev) if (!slot_of_.count(pn[x].h)) return false; }
+    return true;
 }
 
 std::vector<V2Candidate> V2Session::decode_once(const std::string& keys_str, const std::vector<V2CtxToken>& ctx, V2Timing* tm) {
@@ -234,7 +244,12 @@ std::vector<V2Candidate> V2Session::decode_once(const std::string& keys_str, con
     std::string ctx_key; for (int32_t t : root) { ctx_key += std::to_string(t); ctx_key += ','; }
     // The recomputation window's frozen line for this keystroke (positions < q0 keep the previous beam), decided first: only
     // arcs that can reach the last positions need fresh scores, so the enumeration and the syllable pass see keys[c0:] only.
-    const bool freeze_possible = freeze_dist_ > 0 && prev_.nk > 0 && (int)keys_str.size() > (int)prev_.keys.size() && keys_str.compare(0, prev_.keys.size(), prev_.keys) == 0 && prev_.ctx == ctx_key && kv_valid_ && ctx_key == kv_ctx_;
+    // Keys that grew keep the beam below the line; so do keys that shrank (backspace, a syllable deleted): every position
+    // below the line covers keys both strings share, and on a long composition the cold decode is a second or more.
+    const bool grew = keys_str.size() > prev_.keys.size() && keys_str.compare(0, prev_.keys.size(), prev_.keys) == 0;
+    const bool shrank = keys_str.size() < prev_.keys.size() && prev_.keys.compare(0, keys_str.size(), keys_str) == 0;
+    const bool freeze_possible = freeze_dist_ > 0 && prev_.nk > 0 && (grew || shrank) && prev_.ctx == ctx_key && kv_valid_ && ctx_key == kv_ctx_ &&
+                                 (grew || window_has_rows(std::min(nk - freeze_dist_, prev_.nk)));
     const int q0_want = freeze_possible ? std::min(nk - freeze_dist_, prev_.nk) : 0;
     const int c0 = (q0_want > 1 && syl_ctx_ > 0) ? std::max(0, q0_want - max_seg_len_ - syl_ctx_) : 0;   // first key the front end looks at
     const std::vector<int32_t> keys_sub(keys.begin() + c0, keys.end());

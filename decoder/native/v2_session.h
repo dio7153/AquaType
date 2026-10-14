@@ -51,7 +51,8 @@ public:
     void restore_tier(bool fast) { if (tier_auto_) { set_tier(fast); key_ms_.clear(); } }
 private:
     std::vector<V2Candidate> decode_once(const std::string& keys, const std::vector<V2CtxToken>& ctx, V2Timing* timing);   // may throw V2Model::Overflow
-    bool compact_for_window(int q0, int extra = 0);
+    bool compact_for_window(int q0, int extra = 0, int back = 0);
+    bool window_has_rows(int q0) const;
     std::vector<int32_t> encode_keys(const std::string& keys) const;
 
     std::unique_ptr<V2Model> model_; std::unique_ptr<Enumerator> en_;
