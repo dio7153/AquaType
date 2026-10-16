@@ -6,7 +6,9 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#ifndef AQ_CPU
 #include "mlx/backend/metal/metal.h"
+#endif
 static std::string g_err;
 // The C API AquaTypeEngine calls.  An export written by decoder/v2/export_v2.py carries "format": "aquatype-v2/1" in
 // its model.json; anything else is refused.
@@ -20,7 +22,12 @@ static bool is_v2_export(const std::string& dir) {
 static char* dup_js(const std::string& js) { char* out = (char*)std::malloc(js.size() + 1); std::memcpy(out, js.c_str(), js.size() + 1); return out; }
 extern "C" {
 aq_decoder* aq_open(const char* model_dir, const char* metallib_path) {
-    try { if (metallib_path && *metallib_path) mlx::core::metal::set_metallib_path(metallib_path);
+    try {
+#ifndef AQ_CPU
+        if (metallib_path && *metallib_path) mlx::core::metal::set_metallib_path(metallib_path);
+#else
+        (void)metallib_path;                                                             // no Metal library on the CPU backend
+#endif
         const std::string dir = model_dir ? model_dir : "";
         if (!is_v2_export(dir)) { g_err = "not a v2 export: " + dir; return nullptr; }
         return new aq_decoder{new aq::V2Session(dir)}; }
@@ -35,12 +42,15 @@ char* aq_decode(aq_decoder* d, const char* keys, const char* ctx_json) {
         static const bool log_ms = std::getenv("AQ_LOG_MS") != nullptr;
         if (log_ms) {
             auto num = [&](const char* k) { size_t q = js.find(k); return q == std::string::npos ? -1.0 : std::atof(js.c_str() + q + std::strlen(k)); };
-            std::fprintf(stderr, "[aq] keys %zu total %.1f syl %.1f lm %.1f beam %.1f spans %.1f prune %.1f\n", std::strlen(keys ? keys : ""),
-                         num("\"total\":"), num("\"syllable\":"), num("\"lm\":"), num("\"beam\":"), num("\"spans\":"), num("\"prune\":"));
+            std::fprintf(stderr, "[aq] keys %zu total %.1f syl %.1f lm %.1f beam %.1f spans %.1f prune %.1f steps %.0f%s%s%s\n", std::strlen(keys ? keys : ""),
+                         num("\"total\":"), num("\"syllable\":"), num("\"lm\":"), num("\"beam\":"), num("\"spans\":"), num("\"prune\":"), num("\"steps\":"),
+                         js.find("\"tier\":\"fast\"") != std::string::npos ? " fast" : "",
+                         num("\"resets\":") > 0 ? " overflow-redo" : "", num("\"cache_reset\":") > 0 ? " cache-reset" : "");
         }
         return dup_js(js);
     } catch (const std::exception& e) { g_err = e.what(); return nullptr; }
 }
+void aq_abort(aq_decoder* d) { if (d) d->v2->abort(); }
 void aq_reset(aq_decoder* d) { if (d) d->v2->reset(); }
 void aq_maintain(aq_decoder* d) { if (d) d->v2->maintain(); }
 int aq_char_id(aq_decoder* d, const char* c) {
@@ -56,6 +66,8 @@ char* aq_readings(aq_decoder* d, const char* keys) {
         return dup_js(js);
     } catch (const std::exception& e) { g_err = e.what(); return dup_js("[]"); }
 }
+int aq_tier(aq_decoder* d) { return d && d->v2->tier_fast() ? 1 : 0; }
+void aq_set_tier(aq_decoder* d, int fast) { if (d) d->v2->restore_tier(fast != 0); }
 void aq_free(char* p) { std::free(p); }
 const char* aq_last_error(void) { return g_err.c_str(); }
 const char* aq_version(void) { return DECODER_NATIVE_VERSION; }

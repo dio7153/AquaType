@@ -2,6 +2,7 @@
 // model (MLX) -> a joint beam over characters with the character model through a K/V table (MLX) -> candidates.
 // decode_json speaks the JSON the host reads: {"candidates":[{text,score,fit_total,char_ends,reading,prefix}],...}.
 #pragma once
+#include <atomic>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -34,9 +35,24 @@ public:
     // The syllables a clean key string spells, or empty when it does not segment exactly.  The personal memory stores a
     // phrase by its reading, and a commit that did not come from a decoder row has no reading to read off.
     std::vector<int32_t> exact_readings(const std::string& keys) const;
+    // The speed tier, so the host can keep it across restarts: tier_fast() after a session, restore_tier() right after
+    // opening the next one (instead of re-learning it over the first 16 keys).  restore_tier does nothing when the tier is
+    // fixed (AQ_TIER=fast|accurate, AQ_BEAM_U, AQ_FINAL_U); auto mode goes on adjusting from there.
+    // Cooperative abort, from another thread: the host has newer keys for this session, so the decode in progress is
+    // stale.  It stops at the next step boundary (between the syllable pass's layers on the CPU, after that pass, or
+    // between beam positions) and decode_json
+    // returns {"aborted":true,"candidates":[]}.  Nothing it leaves behind is inconsistent: the K/V rows and hidden states
+    // it added are keyed by text and valid; the beam positions it completed past its frozen line replace prev_ (the next
+    // keystroke recomputes from there), and if it completed none, prev_ stays and a table it compacted for its own window
+    // is dropped.  Each decode_json clears the flag when it starts.
+    void abort() { abort_.store(true, std::memory_order_relaxed); }
+    struct Aborted {};
+    bool tier_fast() const { return tier_fast_; }
+    void restore_tier(bool fast) { if (tier_auto_) { set_tier(fast); key_ms_.clear(); } }
 private:
     std::vector<V2Candidate> decode_once(const std::string& keys, const std::vector<V2CtxToken>& ctx, V2Timing* timing);   // may throw V2Model::Overflow
-    bool compact_for_window(int q0, int extra = 0);
+    bool compact_for_window(int q0, int extra = 0, int back = 0);
+    bool window_has_rows(int q0) const;
     std::vector<int32_t> encode_keys(const std::string& keys) const;
 
     std::unique_ptr<V2Model> model_; std::unique_ptr<Enumerator> en_;
@@ -120,6 +136,18 @@ private:
     // Candidates are read from the beam at the last position, which expands no children, so a wider pool there costs one
     // step's extra rows and nothing else.
     int final_u_ = 1024;
+    // Speed tiers (CPU builds): accurate (U 64 / final 192) or fast (48 / 128).  With AQ_TIER unset (auto) the session
+    // keeps the last keystrokes' decode times and, between sentences only, moves to fast when their median is over
+    // tier_slow_ms_ and back to accurate when it is under tier_fast_ms_.  AQ_TIER=fast|accurate, or AQ_BEAM_U /
+    // AQ_FINAL_U, fix the widths instead.
+    // Inputs of at most short_keys_ keys use the wider short_u_ / short_final_u_ (0 = off).
+    int short_keys_ = 0, short_u_ = 0, short_final_u_ = 0;
+    bool tier_auto_ = false, tier_fast_ = false;
+    double tier_slow_ms_ = 150, tier_fast_ms_ = 70;
+    std::vector<float> key_ms_;                                // the latest decode times, at most 32
+    void set_tier(bool fast);
+    void note_key_ms(double ms);
+    std::atomic<bool> abort_{false};
     struct PrevBeam { std::vector<char> nodes; std::vector<std::vector<int>> at; std::string keys, ctx; int nk = 0; } prev_;
     // maintain() compacts the K/V table once it holds more than this many rows.  A decode adds 2-5k with the window;
     // compacting more often drops hidden states the next keystroke has to recompute, less often raises the footprint.

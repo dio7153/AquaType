@@ -2,7 +2,7 @@
 a request returns decoder candidates (memory pinned first after a commit; the model's rows; char_to_keys chars; deduped, all
 Chinese), a commit is acknowledged with the memory count, a bad line does not kill the process, and without a decoder the engine
 still answers from the traditional path.  Skipped when the engine binary is not built."""
-import base64, hashlib, json, os, select, subprocess, sys, time
+import base64, hashlib, json, os, queue, select, subprocess, sys, threading, time
 from pathlib import Path
 import pytest
 REPO = Path(__file__).resolve().parents[2]; sys.path.insert(0, str(REPO))
@@ -27,14 +27,26 @@ def commit(raw, text, gen, eid, at=None):
             "selected_text": text, "timestamp_unix_seconds": int(time.time() if at is None else at), "count_delta": 1}
 
 class EngineProc:
-    def __init__(self, args): self.p = subprocess.Popen([str(BIN)] + args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+    def __init__(self, args):
+        self.p = subprocess.Popen([str(BIN)] + args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1, encoding="utf-8")
+        # select() takes only sockets on Windows: there threads read the pipes, and a reply is waited for on a queue
+        self.lines = None
+        if os.name == "nt":
+            self.lines = queue.Queue(); threading.Thread(target=lambda: [self.lines.put(l) for l in self.p.stdout], daemon=True).start()
+            self.err = []; threading.Thread(target=lambda: self.err.extend(self.p.stderr), daemon=True).start()
     def send(self, msg):
         self.p.stdin.write(json.dumps(msg, ensure_ascii=False) + "\n"); self.p.stdin.flush()
+        if self.lines is not None:
+            try: return json.loads(self.lines.get(timeout=60))
+            except queue.Empty: self.p.kill(); raise TimeoutError(f"no answer within 60 s to {msg.get('schema')}")
         if not select.select([self.p.stdout], [], [], 60)[0]:                       # an engine that hangs fails the test
             self.p.kill(); raise TimeoutError(f"no answer within 60 s to {msg.get('schema')}")
         return json.loads(self.p.stdout.readline())
     def raw(self, line): self.p.stdin.write(line + "\n"); self.p.stdin.flush()
-    def close(self): self.p.stdin.close(); self.p.wait(timeout=30); return self.p.stderr.read()
+    def close(self):
+        self.p.stdin.close(); self.p.wait(timeout=30)
+        if self.lines is not None: time.sleep(0.1); return "".join(self.err)
+        return self.p.stderr.read()
 
 def test_engine_jsonl_contract(tmp_path):
     out = DECODER; state = tmp_path / "state"; state.mkdir(); raw = "5j4u4"                                     # 注意
@@ -53,8 +65,52 @@ def test_engine_jsonl_contract(tmp_path):
     r5 = d.send(request(c2k["我"], 1)); assert r5["visible_path"] == "DETERMINISTIC_RIME_AQDS_PERSONAL_V1" and any(c["text_utf8"] == "我" for c in r5["candidates"])
     assert "decoder unavailable" in d.close()
 
+@pytest.mark.skipif(os.name != "nt" or not (REPO / "packaging/payload/rime/terra_pinyin.dict.yaml").exists(), reason="the Windows engine's --char-readings")
+def test_other_readings(tmp_path):
+    """char_to_keys.json has one reading a character; the dictionary's other readings make 蔚 typable as ㄩˋ too (its table
+    reading is ㄨㄟˋ), after the characters that read ㄩˋ in the table; without the dictionary it is not offered."""
+    common = ["--command", "serve-ui-jsonl", "--decoder-dir", str(DECODER), "--fallback-aqds", str(AQDS), "--fallback-manifest", str(AQDS) + ".manifest.json",
+              "--char-to-keys", str(REPO / "data/char_to_keys.json"), "--state-dir", str(tmp_path)]
+    def texts(extra):
+        e = EngineProc(common + extra); r = e.send(request("m4", 1, max_n=9)); e.close(); return [c["text_utf8"] for c in r["candidates"]]
+    plain, more = texts([]), texts(["--char-readings", str(REPO / "packaging/payload/rime/terra_pinyin.dict.yaml")])
+    assert "蔚" not in plain and "蔚" in more and more.index("蔚") > more.index("鬻") and [t for t in more if t in plain] == plain
+
+@pytest.mark.skipif(os.name != "nt", reason="the Windows engine keeps the decoder's tier")
+def test_tier_is_kept(tmp_path, monkeypatch):
+    """A machine slow enough for the fast tier (here: any, AQ_TIER_SLOW_MS tiny) ends a sentence on it; the engine writes
+    it to the state folder, and the next engine starts on it without writing it again."""
+    common = ["--command", "serve-ui-jsonl", "--decoder-dir", str(DECODER), "--fallback-aqds", str(AQDS), "--fallback-manifest", str(AQDS) + ".manifest.json",
+              "--char-to-keys", str(REPO / "data/char_to_keys.json"), "--state-dir", str(tmp_path)]
+    monkeypatch.setenv("AQ_TIER_SLOW_MS", "0.001"); raw = "5j/ 2u6ru03g4jp6ej4"                                    # 中文輸入法, 18 keys
+    e = EngineProc(common)
+    for n in range(1, len(raw) + 1): e.send(request(raw[:n], n))
+    e.send(commit(raw, "中文輸入法", len(raw) + 1, "t1")); err = e.close()
+    assert (tmp_path / "tier").read_text().strip() == "fast" and "[engine] tier fast" in err
+    monkeypatch.delenv("AQ_TIER_SLOW_MS"); d = EngineProc(common); d.send(request("u", 1)); d.send(commit("u", "一", 2, "t2"))   # too few keys to switch back
+    assert "[engine] tier" not in d.close() and (tmp_path / "tier").read_text().strip() == "fast"   # had it not started fast, the commit would have written accurate
+
+@pytest.mark.skipif(os.name != "nt", reason="the Windows engine's dispatcher")
+def test_newer_keys_stop_the_stale_answer(tmp_path):
+    """Keys sent while the same client's answer is still decoding: the stale one is stopped or skipped and never answered,
+    and the answer for the newest keys is the one a lone request gets.  Commits are never dropped."""
+    common = ["--command", "serve-ui-jsonl", "--decoder-dir", str(DECODER), "--fallback-aqds", str(AQDS), "--fallback-manifest", str(AQDS) + ".manifest.json",
+              "--char-to-keys", str(REPO / "data/char_to_keys.json"), "--state-dir", str(tmp_path)]
+    raw = "ji3ap7au/6wu0 vu84j3d9 cjo4"                                                                          # 我們明天下午開會
+    e = EngineProc(common); e.send(request("u", 1)); e.send(commit("u", "一", 2, "warm"))                        # warmed up, sentence ended
+    alone = [c["text_utf8"] for c in e.send(request(raw, 3))["candidates"]]
+    for n in range(1, len(raw) + 1): e.raw(json.dumps(request(raw[:n], 10 + n)))                                 # typed faster than it decodes
+    e.raw(json.dumps(commit(raw, "我們明天下午開會", 100, "c2")))
+    replies = []
+    while not any(r.get("event_id") == "c2" for r in replies): replies.append(json.loads(e.lines.get(timeout=120)))
+    answers = [r for r in replies if r["schema"] == "aquatype-ui-fallback-response/v1"]
+    assert answers and answers[-1]["raw_keys"] == raw and len(answers) < len(raw)                                # stale ones were not all answered
+    assert answers[-1]["candidates"][0]["text_utf8"] == alone[0]                                                 # skipping keys may reorder near ties, not the first
+    assert "c2" in [r.get("event_id") for r in replies]
+    e.close()
+
 def test_engine_char_coverage():
-    r = subprocess.run([str(BIN), "--check-char-coverage", str(REPO / "data/char_to_keys.json")], capture_output=True, text=True, timeout=300)
+    r = subprocess.run([str(BIN), "--check-char-coverage", str(REPO / "data/char_to_keys.json")], capture_output=True, text=True, encoding="utf-8", timeout=300)
     assert r.returncode == 0 and json.loads(r.stdout.strip().splitlines()[-1])["missing"] == 0
 
 
@@ -128,7 +184,8 @@ def test_memory_takes_back_a_commit_corrected_at_once(tmp_path):
     rows = {r[0]: float(r[4]) for r in (l.split("\t") for l in (state / "personal_memory.v2.tsv").read_text(encoding="utf-8").splitlines())}
     assert rows == {"注意": 0.0, "助益": 1.0}, rows          # taken back to nothing, kept for the next time it is chosen
     assert offered == ["助益"], offered
-    assert (state.stat().st_mode & 0o777) == 0o700 and ((state / "personal_memory.v2.tsv").stat().st_mode & 0o777) == 0o600
+    if os.name == "posix":                                                          # Windows: the profile folder's ACL keeps it private
+        assert (state.stat().st_mode & 0o777) == 0o700 and ((state / "personal_memory.v2.tsv").stat().st_mode & 0o777) == 0o600
 
 
 def test_memory_rewrite_gives_way_to_a_later_choice_of_the_models_characters(tmp_path):
@@ -214,6 +271,7 @@ def test_memory_two_engines_never_overwrite_each_other(tmp_path):
     assert texts == {"注意", "今天", "好"}, texts
 
 
+@pytest.mark.skipif(os.name == "nt", reason="a looping symlink needs the symlink privilege on Windows")
 def test_memory_not_replaced_when_it_cannot_be_looked_at(tmp_path):
     """A memory that cannot be looked at for a moment (a network home reconnecting; here a link that loops, which fails
     with ELOOP) is not taken for an empty one: the commit is not written over it."""

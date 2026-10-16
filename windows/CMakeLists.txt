@@ -1,0 +1,77 @@
+# AquaType for Windows: the decoder on the CPU backend (decoder/native/cpu) and the engine (windows/engine).
+#   cmake -S windows -B windows/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+#   cmake --build windows/build
+cmake_minimum_required(VERSION 3.20)
+project(aquatype_windows CXX RC)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+include(FetchContent)
+FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+  URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d)
+FetchContent_MakeAvailable(json)
+
+# AQ_TIP_ONLY: just the text service (the 32-bit copy that 32-bit apps load; it talks to the one 64-bit engine)
+option(AQ_TIP_ONLY "build only the text service" OFF)
+if(NOT AQ_TIP_ONLY)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../decoder/native/cpu decoder)
+
+add_executable(AquaTypeEngine engine/engine.cpp engine/aqds.cpp engine/memory.cpp engine/util.cpp tip/settings.cpp)
+target_include_directories(AquaTypeEngine PRIVATE tip)
+target_link_libraries(AquaTypeEngine PRIVATE aquadecoder nlohmann_json::nlohmann_json bcrypt advapi32)
+target_compile_definitions(AquaTypeEngine PRIVATE _CRT_SECURE_NO_WARNINGS)
+if(MSVC)
+  target_compile_options(AquaTypeEngine PRIVATE /O2 /utf-8 /EHsc /W3)
+  set_property(TARGET AquaTypeEngine PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")   # runs on machines without the VC++ redistributable; the decoder's memory crosses only through aq_free
+endif()
+# No console window: the text service and the logon entry start it in the background.  Pipes still work for stdio mode (tests).
+target_link_options(AquaTypeEngine PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
+# the dispatcher and both builds it picks from, next to the engine: a target of its own, so a rebuilt decoder is copied
+# even when the engine itself did not relink
+add_custom_target(aq_decoder_copy ALL COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:aquadecoder>
+  $<TARGET_FILE:aquadecoder_avx2> $<TARGET_FILE:aquadecoder_sse> ${AQ_RUNTIME_DLLS} $<TARGET_FILE_DIR:AquaTypeEngine> DEPENDS aquadecoder)
+endif()
+
+# the text service's core, without TSF, and its test against the real engine
+add_library(aqtip_core STATIC tip/composer.cpp tip/engine_link.cpp tip/settings.cpp)
+target_include_directories(aqtip_core PUBLIC tip)
+target_link_libraries(aqtip_core PUBLIC nlohmann_json::nlohmann_json ole32 shell32 advapi32)
+target_compile_definitions(aqtip_core PRIVATE _CRT_SECURE_NO_WARNINGS)
+if(NOT AQ_TIP_ONLY)
+add_executable(composer_test tip/composer_test.cpp)
+target_link_libraries(composer_test PRIVATE aqtip_core)
+endif()
+if(MSVC)
+  target_compile_options(aqtip_core PRIVATE /O2 /utf-8 /EHsc /W3)
+  if(NOT AQ_TIP_ONLY)
+    target_compile_options(composer_test PRIVATE /O2 /utf-8 /EHsc)
+  endif()
+endif()
+# the text service (TSF): AquaTypeTSF.dll, loaded into every app; registered with regsvr32 (as administrator)
+add_library(AquaTypeTSF SHARED tip/tsf/dllmain.cpp tip/tsf/tip.cpp tip/tsf/candwin.cpp tip/tsf/langbar.cpp tip/tsf/AquaTypeTSF.def tip/tsf/AquaTypeTSF.rc)
+target_link_libraries(AquaTypeTSF PRIVATE aqtip_core dwmapi uuid d2d1 dwrite)
+if(MSVC)
+  target_compile_options(AquaTypeTSF PRIVATE /O2 /utf-8 /EHsc /W3)
+  set_property(TARGET AquaTypeTSF PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")    # no VC runtime DLL to find inside other apps
+  set_property(TARGET aqtip_core PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
+  if(NOT AQ_TIP_ONLY)
+    set_property(TARGET composer_test PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
+  endif()
+endif()
+# AquaTypeSettings.exe: the settings window (right click on the taskbar's 中/英, or Windows Settings' 「選項」)
+if(NOT AQ_TIP_ONLY)
+add_executable(AquaTypeSettings WIN32 settings/settings_app.cpp settings/settings_app.rc settings/settings_app.manifest tip/settings.cpp)
+target_include_directories(AquaTypeSettings PRIVATE tip)
+target_link_libraries(AquaTypeSettings PRIVATE comctl32 advapi32 shell32 user32 gdi32)
+if(MSVC)
+  target_compile_options(AquaTypeSettings PRIVATE /O2 /utf-8 /EHsc /W3)
+  set_property(TARGET AquaTypeSettings PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
+endif()
+endif()
+# the candidate window drawn into PNGs (windows/tip/tsf/candwin_preview.cpp)
+add_executable(candwin_preview tip/tsf/candwin_preview.cpp tip/tsf/candwin.cpp)
+target_link_libraries(candwin_preview PRIVATE aqtip_core dwmapi d2d1 dwrite windowscodecs ole32)
+if(MSVC)
+  target_compile_options(candwin_preview PRIVATE /O2 /utf-8 /EHsc)
+  set_property(TARGET candwin_preview PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
+endif()

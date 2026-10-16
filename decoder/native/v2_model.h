@@ -3,6 +3,9 @@
 // model (pre-LN GPT, fp16) with the tree-structured key/value table the beam needs.  Weights from
 // decoder/v2/export_v2.py (model.safetensors + model.json).
 #pragma once
+#ifdef AQ_CPU
+#include "cpu/v2_model_cpu.h"   // the same interface on the CPU, without MLX
+#else
 #include <optional>
 #include <stdexcept>
 #include <memory>
@@ -82,3 +85,4 @@ private:
     int pos_rows_ = 0;
 };
 }  // namespace aq
+#endif  // AQ_CPU
